@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "content_version": "2026-10-04.1",
+  "content_version": "2026-10-04.2",
   "title": "前端技术知识手册",
   "source_map": "knowledge_map.json",
-  "master_count": 211,
+  "master_count": 214,
   "company_question_count": 47,
   "topic_count": 35,
   "chapters": [
@@ -3378,6 +3378,18 @@
         {
           "title": "记忆化优化重复工作，不提供业务语义",
           "text": "memo 默认按 Object.is 比较 props，子组件自身状态与 Context 更新仍会渲染；新建函数和对象也会破坏引用稳定。useMemo 可缓存昂贵纯计算，useCallback 稳定有实际用途的函数身份，但都不能靠遗漏依赖维持旧闭包。React Compiler 自动记忆化同样依赖纯度和规则，需检查编译覆盖与诊断，渐进评估现有缓存。首次大计算、巨量 DOM 与错误生命周期不会因启用编译器自动消失，验收要看交互与提交成本。 迁移先留正确性与生产性能基线，小范围启用并验证外部库的引用身份约定，再决定是否删除已有缓存；代码变短不等于收益已经被证明。"
+        },
+        {
+          "title": "Effect Event 分离同步条件与通知读取",
+          "text": "聊天室连接由 roomId 决定时，roomId 是 Effect 的响应式依赖；通知主题仅在连接事件发生时取最新值，可以放入 useEffectEvent。不要把真正改变同步目标的输入藏进去，也不要把 Effect Event 传给其他组件/Hook 或当普通点击 handler。它不替代连接清理、迟到回调有效性判断或 useCallback 的用途。此能力按 React 19.2 起的语义教学，使用时仍需核对所用版本和相应 lint 支持。"
+        },
+        {
+          "title": "自定义 Hook 复用逻辑，状态归属仍须明确",
+          "text": "两个组件各调用 useCounter，内部 useState 仍各有实例，生命周期取决于对应的树身份。要共享同一计数，在共同 owner 调用一次并传递值/操作；Context 或外部 store 可以扩大读取范围，但共享来自那份状态的归属。两个订阅者同时响应 online/offline，只说明看到了同一外部事实，不能证明局部 React state 已合并。Hook 只封装边界，不能替错误依赖与缺失 cleanup 兜底。"
+        },
+        {
+          "title": "Reducer 集中转换规则，并显式定义历史",
+          "text": "当多条事件路径共享状态转换规则时，action 表达事件，纯 reducer 计算下一份不可变 state。dispatch 不改变当前 handler 的快照，reducer 不负责请求、写存储或生成不可控随机值。撤销必须先定义范围：只记录 count 前值，就只能撤销 count；要恢复 step 等字段，需要完整快照或明确的逆操作。useReducer 不自动获得全局共享、性能提升、持久化或完整事件日志。"
         }
       ],
       "example": {
@@ -3390,25 +3402,36 @@
       "boundaries": [
         "key 是同级树身份，不要求全应用唯一；useId 不能代替业务列表 key。",
         "StrictMode 的额外检查是开发行为；根部未启用而仅局部启用时，初次 Effect 重跑规则也不同。",
-        "memo 不是不渲染保证，useMemo 不是持久存储；useLayoutEffect 更早也不会让网络更快。"
+        "memo 不是不渲染保证，useMemo 不是持久存储；useLayoutEffect 更早也不会让网络更快。",
+        {
+          "title": "按产品身份决定 reset 与保留",
+          "text": "业务 key 改变会重建子树，不是按 key 自动缓存已经卸载的草稿。跨实体切回仍需保留时，应把草稿放在能按实体标识保存的 owner；单字段清空无需重建整树。"
+        },
+        {
+          "title": "模拟器不能证明 Compiler 生效",
+          "text": "原站 React Compiler Demo 只演示心智模型；真实编译覆盖要看配置、诊断或产物，收益要在可比交互中量测。不得把该 Demo 的显示结果标为本项目的性能测试记录。"
+        }
       ],
       "tradeoffs": [
         "局部状态降低更新传播，但跨卸载草稿要提升归属；提升后须明确账号隔离和清理。",
-        "缓存与布局测量能改善特定体验，却增加比较、内存或绘制阻塞；先量测再使用。"
+        "缓存与布局测量能改善特定体验，却增加比较、内存或绘制阻塞；先量测再使用。",
+        "自定义 Hook、reducer、Context 各解决复用、转换与传递问题；优先使用最小方案，避免为单个 boolean 引入一整套状态架构。"
       ],
-      "oral_summary": "我会用快照解释状态队列，用位置、类型和 key 解释状态身份，再把事件、纯派生值与外部同步分开。Effect 做对称清理并保护所有迟到写入；布局 Effect 只做必要测量。最后才以 Profiler 判断手工或编译器记忆化的收益。",
+      "oral_summary": "我会用快照解释状态队列，用位置、类型和 key 解释状态身份，再把事件、纯派生值与外部同步分开。Effect 做对称清理并保护所有迟到写入；布局 Effect 只做必要测量。最后才以 Profiler 判断手工或编译器记忆化的收益。 复用逻辑时区分 Hook 调用与共享 owner；复杂事件转换可用纯 reducer 集中表达。Effect Event 只分离 Effect 内非响应式通知，不是删依赖的捷径；撤销与缓存都要明确各自的边界。",
       "exercises": [
         {
           "prompt": "可编辑列表删首项后草稿串行，同时父组件无关更新令输入丢焦，怎样定位？",
           "checkpoints": [
             "检查稳定业务 key 与父函数内部组件定义。",
             "区分切换对象重置和跨路由保留草稿。",
-            "验证重排、两份表单与 useId 标签关联。"
+            "验证重排、两份表单与 useId 标签关联。",
+            "比较两次 useCounter 调用与父组件一次调用后传值，明确共享 owner；说明切回记录保留草稿的存放位置。"
           ],
           "question_ids": [
             "F04",
             "F18",
-            "F21"
+            "F21",
+            "F32"
           ]
         },
         {
@@ -3416,7 +3439,8 @@
           "checkpoints": [
             "所有数据、错误、loading 写入均绑定本轮有效性。",
             "依赖完整、清理对称，检查最终有效订阅数量。",
-            "网络不搬进布局阻塞路径，性能问题再用生产 Profiler 与编译器诊断。"
+            "网络不搬进布局阻塞路径，性能问题再用生产 Profiler 与编译器诊断。",
+            "区分 roomId 同步依赖与 theme 通知读取，保留清理及迟到回调门控；用纯 reducer 归集状态转换时，不把请求搬入 reducer。"
           ],
           "question_ids": [
             "F01",
@@ -3424,7 +3448,9 @@
             "F03",
             "F05",
             "F17",
-            "X08"
+            "X08",
+            "F31",
+            "F33"
           ]
         }
       ],
@@ -3437,7 +3463,10 @@
         "F17",
         "F18",
         "F21",
-        "X08"
+        "X08",
+        "F31",
+        "F32",
+        "F33"
       ],
       "sources": [
         {
@@ -3459,9 +3488,78 @@
           "title": "React：Compiler Introduction",
           "url": "https://react.dev/learn/react-compiler/introduction",
           "verified_date": "2026-10-04"
+        },
+        {
+          "title": "原创笔记：state-snapshot-queue",
+          "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/state-snapshot-queue.mdx",
+          "verified_date": "2026-10-04",
+          "repository": "CoderLambert/react-learning-playground",
+          "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+          "blob_sha": "f78779ed89d14b7173863eac648cf5e9d43902da",
+          "limitations": "正文与注册表已读取；关联实验未执行。"
+        },
+        {
+          "title": "原创笔记：preserving-resetting-state",
+          "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/preserving-resetting-state.mdx",
+          "verified_date": "2026-10-04",
+          "repository": "CoderLambert/react-learning-playground",
+          "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+          "blob_sha": "7082ad87dfa89fdf72d9ec97b192124e99e4546b",
+          "limitations": "正文与注册表已读取；关联实验未执行。"
+        },
+        {
+          "title": "原创笔记：react-compiler",
+          "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/react-compiler.mdx",
+          "verified_date": "2026-10-04",
+          "repository": "CoderLambert/react-learning-playground",
+          "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+          "blob_sha": "443d5a86548540274ad4114f186265f9f8f2c5ed",
+          "limitations": "正文与注册表已读取；关联实验未执行。"
+        },
+        {
+          "title": "原创笔记：effect-event",
+          "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/effect-event.mdx",
+          "verified_date": "2026-10-04",
+          "repository": "CoderLambert/react-learning-playground",
+          "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+          "blob_sha": "2222b9ac064854ad4dcdc9fe9a33d9930a986b65",
+          "limitations": "正文与注册表已读取；关联实验未执行。"
+        },
+        {
+          "title": "React 官方：effect-event",
+          "url": "https://react.dev/reference/react/useEffectEvent",
+          "verified_date": "2026-10-04"
+        },
+        {
+          "title": "原创笔记：custom-hooks",
+          "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/custom-hooks.mdx",
+          "verified_date": "2026-10-04",
+          "repository": "CoderLambert/react-learning-playground",
+          "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+          "blob_sha": "a783b1628ca41a4a3a734664535743b1f3495541",
+          "limitations": "正文与注册表已读取；关联实验未执行。"
+        },
+        {
+          "title": "React 官方：custom-hooks",
+          "url": "https://react.dev/learn/reusing-logic-with-custom-hooks",
+          "verified_date": "2026-10-04"
+        },
+        {
+          "title": "原创笔记：state-reducer",
+          "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/state-reducer.mdx",
+          "verified_date": "2026-10-04",
+          "repository": "CoderLambert/react-learning-playground",
+          "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+          "blob_sha": "553664db5758eac2915603aca5f4fa4adc28fdd9",
+          "limitations": "正文与注册表已读取；关联实验未执行。"
+        },
+        {
+          "title": "React 官方：state-reducer",
+          "url": "https://react.dev/reference/react/useReducer",
+          "verified_date": "2026-10-04"
         }
       ],
-      "version_notes": "按 React 19 系列和核验日官方文档；不假定项目已启用 React Compiler。StrictMode 的检查范围、编译器版本与构建覆盖需显式确认。",
+      "version_notes": "按 React 19 系列和核验日官方文档；不假定项目已启用 React Compiler。StrictMode 的检查范围、编译器版本与构建覆盖需显式确认。 本次拟增补来源为 React Learning Playground 固定提交 49df03e3557f0b789aee77dbe23ca84d610cd166 的六个单元；Effect Event 以 React 19.2 起为最低版本条件。官方文档核对日为2026-10-04，在线参考可能随新版更新；本轮未运行新增教学示例、原站 Demo 或 Compiler 验证。",
       "primary": "框架与状态管理",
       "display_order": [
         4,
@@ -3477,7 +3575,28 @@
             "library_file_id": "libfile_8f22e0edc3cc81918f9f44647743b0e3",
             "version": 3,
             "sha256": "a3e0c104c425e4191f64bfe1a723764a35b6bce1e5cfd4250b2411b73a0e4ef4",
-            "bookmark": "F01"
+            "bookmark": "F01",
+            "supplemental_sources": [
+              {
+                "repository": "CoderLambert/react-learning-playground",
+                "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+                "branch_observed": "main",
+                "path": "src/content/notes/state-snapshot-queue.mdx",
+                "learning_unit_id": "state-snapshot-queue",
+                "blob_sha": "f78779ed89d14b7173863eac648cf5e9d43902da",
+                "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/state-snapshot-queue.mdx",
+                "demo_url": "https://coderlambert.github.io/react-learning-playground/?demo=state-snapshot-queue",
+                "demo_source_url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/demos/StateSnapshotQueueDemo.jsx",
+                "adaptation": "作者原创学习笔记的面试化整理；非企业面经",
+                "reviewed_date": "2026-10-04",
+                "react_baseline": "19.2",
+                "authorization": "作者确认内容为本人原创并允许直接使用；未推定 SPDX 开源许可证",
+                "limitations": [
+                  "只读审阅正文与官方资料；未运行 Demo 或教学代码。",
+                  "在线 Demo 跟随原站发布，固定版本证据以提交链接为准。"
+                ]
+              }
+            ]
           }
         },
         {
@@ -3510,7 +3629,28 @@
             "library_file_id": "libfile_8f22e0edc3cc81918f9f44647743b0e3",
             "version": 3,
             "sha256": "a3e0c104c425e4191f64bfe1a723764a35b6bce1e5cfd4250b2411b73a0e4ef4",
-            "bookmark": "F04"
+            "bookmark": "F04",
+            "supplemental_sources": [
+              {
+                "repository": "CoderLambert/react-learning-playground",
+                "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+                "branch_observed": "main",
+                "path": "src/content/notes/preserving-resetting-state.mdx",
+                "learning_unit_id": "preserving-resetting-state",
+                "blob_sha": "7082ad87dfa89fdf72d9ec97b192124e99e4546b",
+                "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/preserving-resetting-state.mdx",
+                "demo_url": "https://coderlambert.github.io/react-learning-playground/?demo=preserving-resetting-state",
+                "demo_source_url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/demos/PreservingResettingStateDemo.jsx",
+                "adaptation": "作者原创学习笔记的面试化整理；非企业面经",
+                "reviewed_date": "2026-10-04",
+                "react_baseline": "19.2",
+                "authorization": "作者确认内容为本人原创并允许直接使用；未推定 SPDX 开源许可证",
+                "limitations": [
+                  "只读审阅正文与官方资料；未运行 Demo 或教学代码。",
+                  "在线 Demo 跟随原站发布，固定版本证据以提交链接为准。"
+                ]
+              }
+            ]
           }
         },
         {
@@ -3532,7 +3672,28 @@
             "library_file_id": "libfile_8f22e0edc3cc81918f9f44647743b0e3",
             "version": 3,
             "sha256": "a3e0c104c425e4191f64bfe1a723764a35b6bce1e5cfd4250b2411b73a0e4ef4",
-            "bookmark": "F17"
+            "bookmark": "F17",
+            "supplemental_sources": [
+              {
+                "repository": "CoderLambert/react-learning-playground",
+                "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+                "branch_observed": "main",
+                "path": "src/content/notes/react-compiler.mdx",
+                "learning_unit_id": "react-compiler",
+                "blob_sha": "443d5a86548540274ad4114f186265f9f8f2c5ed",
+                "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/react-compiler.mdx",
+                "demo_url": "https://coderlambert.github.io/react-learning-playground/?demo=react-compiler",
+                "demo_source_url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/demos/ReactCompilerDemo.jsx",
+                "adaptation": "作者原创学习笔记的面试化整理；非企业面经",
+                "reviewed_date": "2026-10-04",
+                "react_baseline": "19.2",
+                "authorization": "作者确认内容为本人原创并允许直接使用；未推定 SPDX 开源许可证",
+                "limitations": [
+                  "只读审阅正文与官方资料；未运行 Demo 或教学代码。",
+                  "在线 Demo 跟随原站发布，固定版本证据以提交链接为准。"
+                ]
+              }
+            ]
           }
         },
         {
@@ -3566,6 +3727,81 @@
             "version": 1,
             "sha256": "43ca86d9e407e5a99b4b8a2c68862820abd7f18ec556735c56fb4ffc2a4c0a60",
             "bookmark": "X08"
+          }
+        },
+        {
+          "qid": "F31",
+          "title": "React 聊天室只切换 theme 就重新连接，怎样用 useEffectEvent 分开同步依赖与最新值读取？",
+          "source": {
+            "filename": "src/content/notes/effect-event.mdx",
+            "bookmark": "effect-event",
+            "repository": "CoderLambert/react-learning-playground",
+            "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+            "branch_observed": "main",
+            "path": "src/content/notes/effect-event.mdx",
+            "learning_unit_id": "effect-event",
+            "blob_sha": "2222b9ac064854ad4dcdc9fe9a33d9930a986b65",
+            "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/effect-event.mdx",
+            "demo_url": "https://coderlambert.github.io/react-learning-playground/?demo=effect-event",
+            "demo_source_url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/demos/EffectEventDemo.jsx",
+            "adaptation": "作者原创学习笔记的面试化整理；非企业面经",
+            "reviewed_date": "2026-10-04",
+            "react_baseline": "19.2",
+            "authorization": "作者确认内容为本人原创并允许直接使用；未推定 SPDX 开源许可证",
+            "limitations": [
+              "只读审阅正文与官方资料；未运行 Demo 或教学代码。",
+              "在线 Demo 跟随原站发布，固定版本证据以提交链接为准。"
+            ]
+          }
+        },
+        {
+          "qid": "F32",
+          "title": "两个组件都调用 useCounter，为什么一个加一时另一个不变？怎样复用逻辑并真正共享状态？",
+          "source": {
+            "filename": "src/content/notes/custom-hooks.mdx",
+            "bookmark": "custom-hooks",
+            "repository": "CoderLambert/react-learning-playground",
+            "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+            "branch_observed": "main",
+            "path": "src/content/notes/custom-hooks.mdx",
+            "learning_unit_id": "custom-hooks",
+            "blob_sha": "a783b1628ca41a4a3a734664535743b1f3495541",
+            "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/custom-hooks.mdx",
+            "demo_url": "https://coderlambert.github.io/react-learning-playground/?demo=custom-hooks",
+            "demo_source_url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/demos/CustomHooksDemo.jsx",
+            "adaptation": "作者原创学习笔记的面试化整理；非企业面经",
+            "reviewed_date": "2026-10-04",
+            "react_baseline": "19.2",
+            "authorization": "作者确认内容为本人原创并允许直接使用；未推定 SPDX 开源许可证",
+            "limitations": [
+              "只读审阅正文与官方资料；未运行 Demo 或教学代码。",
+              "在线 Demo 跟随原站发布，固定版本证据以提交链接为准。"
+            ]
+          }
+        },
+        {
+          "qid": "F33",
+          "title": "计数器需要步长、重置与撤销，何时该用 useReducer？为什么不能在 reducer 里请求接口或生成随机数？",
+          "source": {
+            "filename": "src/content/notes/state-reducer.mdx",
+            "bookmark": "state-reducer",
+            "repository": "CoderLambert/react-learning-playground",
+            "ref": "49df03e3557f0b789aee77dbe23ca84d610cd166",
+            "branch_observed": "main",
+            "path": "src/content/notes/state-reducer.mdx",
+            "learning_unit_id": "state-reducer",
+            "blob_sha": "553664db5758eac2915603aca5f4fa4adc28fdd9",
+            "url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/content/notes/state-reducer.mdx",
+            "demo_url": "https://coderlambert.github.io/react-learning-playground/?demo=state-reducer",
+            "demo_source_url": "https://github.com/CoderLambert/react-learning-playground/blob/49df03e3557f0b789aee77dbe23ca84d610cd166/src/demos/StateReducerDemo.jsx",
+            "adaptation": "作者原创学习笔记的面试化整理；非企业面经",
+            "reviewed_date": "2026-10-04",
+            "react_baseline": "19.2",
+            "authorization": "作者确认内容为本人原创并允许直接使用；未推定 SPDX 开源许可证",
+            "limitations": [
+              "只读审阅正文与官方资料；未运行 Demo 或教学代码。",
+              "在线 Demo 跟随原站发布，固定版本证据以提交链接为准。"
+            ]
           }
         }
       ],

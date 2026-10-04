@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { TopicIndexItem } from "@/lib/content";
 
-export function KnowledgeIndex({ topics }: { topics: TopicIndexItem[] }) {
+export function KnowledgeIndex({ topics, exerciseCount }: { topics: TopicIndexItem[]; exerciseCount: number }) {
   const [query, setQuery] = useState("");
   const [domain, setDomain] = useState("all");
   const domains = useMemo(() => Array.from(new Set(topics.map((topic) => topic.primary))), [topics]);
@@ -26,8 +26,8 @@ export function KnowledgeIndex({ topics }: { topics: TopicIndexItem[] }) {
   return (
     <div className="content-page knowledge-index-page">
       <header className="content-page-header">
-        <div><div className="eyebrow">KNOWLEDGE MAP · 从原理出发</div><h1>知识库</h1><p>35 章完整正文、示例、边界与章节练习。先修关系和题目映射来自现有资料。</p></div>
-        <div className="bank-counts"><span><strong>35</strong> 个知识章节</span><span><strong>70</strong> 道章节练习</span></div>
+        <div><div className="eyebrow">KNOWLEDGE MAP · 从原理出发</div><h1>知识库</h1><p>{topics.length} 章完整正文、示例、边界与章节练习。先修关系和题目映射来自现有资料。</p></div>
+        <div className="bank-counts"><span><strong>{topics.length}</strong> 个知识章节</span><span><strong>{exerciseCount}</strong> 道章节练习</span></div>
       </header>
       <Card className="knowledge-filters">
         <div className="knowledge-search"><Search size={18} aria-hidden="true" /><Input type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索章节、原理或关键词" aria-label="搜索知识章节、原理或关键词" /></div>

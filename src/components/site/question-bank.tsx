@@ -33,6 +33,8 @@ function localToday() {
 }
 
 export function QuestionBank({ questions, topics }: { questions: QuestionIndexItem[]; topics: TopicIndexItem[] }) {
+  const masterQuestionCount = questions.filter((item) => item.kind === "master").length;
+  const companyVariantCount = questions.filter((item) => item.kind === "company").length;
   const [tab, setTab] = useState<Tab>("master");
   const [query, setQuery] = useState("");
   const [domain, setDomain] = useState("all");
@@ -133,7 +135,7 @@ export function QuestionBank({ questions, topics }: { questions: QuestionIndexIt
     <div className="content-page question-bank-page">
       <header className="content-page-header">
         <div><div className="eyebrow">QUESTION BANK · 先选一题</div><h1>题库</h1><p>主练题与企业问法分开浏览，企业变体沿用原 ID 并关联主练题。</p></div>
-        <div className="bank-counts"><span><strong>211</strong> 道主练题</span><span><strong>47</strong> 道企业扩展题</span></div>
+        <div className="bank-counts"><span><strong>{masterQuestionCount}</strong> 道主练题</span><span><strong>{companyVariantCount}</strong> 道企业扩展题</span></div>
       </header>
       <Card className="question-bank-filters">
         <div className="question-search-row">
@@ -142,8 +144,8 @@ export function QuestionBank({ questions, topics }: { questions: QuestionIndexIt
         </div>
         <Tabs value={tab} onValueChange={setTabValue} className="bank-tabs">
           <TabsList aria-label="选择题库类型">
-            <TabsTrigger value="master">主练题 <span>{questions.filter((item) => item.kind === "master").length}</span></TabsTrigger>
-            <TabsTrigger value="company">企业扩展 <span>{questions.filter((item) => item.kind === "company").length}</span></TabsTrigger>
+            <TabsTrigger value="master">主练题 <span>{masterQuestionCount}</span></TabsTrigger>
+            <TabsTrigger value="company">企业扩展 <span>{companyVariantCount}</span></TabsTrigger>
           </TabsList>
           <TabsContent value={tab} className="bank-tab-content">
             <div className="filter-grid">

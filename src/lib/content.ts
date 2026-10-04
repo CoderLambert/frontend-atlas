@@ -60,10 +60,10 @@ export const questionIds = new Set(questionIndex.map((question) => question.qid)
 
 export function verifyContentCounts() {
   const unique = (values: string[]) => new Set(values).size === values.length;
-  return questionMap.master_count === masterQuestions.length && unique(masterQuestions.map((question) => question.qid)) &&
-    questionMap.company_question_count === companyQuestions.length && unique(companyQuestions.map((question) => question.qid)) &&
-    questionMap.topic_count === topics.length && unique(topics.map((topic) => topic.topic_id)) &&
-    chapterSet.chapters.length === topics.length && chapterSet.chapters.every((chapter) => chapter.exercises.length === 2);
+  return questionMap.master_count === masterQuestions.length && chapterSet.master_count === masterQuestions.length && unique(masterQuestions.map((question) => question.qid)) &&
+    questionMap.company_question_count === companyQuestions.length && chapterSet.company_question_count === companyQuestions.length && unique(companyQuestions.map((question) => question.qid)) &&
+    questionMap.topic_count === topics.length && chapterSet.topic_count === topics.length && unique(topics.map((topic) => topic.topic_id)) &&
+    chapterSet.chapters.length === topics.length && chapterSet.chapters.every((chapter) => Array.isArray(chapter.exercises) && chapter.exercises.length === 2);
 }
 
 export function questionById(qid: string) {

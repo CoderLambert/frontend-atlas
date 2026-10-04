@@ -71,7 +71,7 @@ export default function HomePage() {
         <Card className="section-card">
           <div className="section-card-header">
             <h2 className="section-card-title"><LibraryBig size={19} aria-hidden="true" />知识地图</h2>
-            <Link className="section-card-link" href="/knowledge/">浏览全部 35 章</Link>
+            <Link className="section-card-link" href="/knowledge/">浏览全部 {topics.length} 章</Link>
           </div>
           <div className="domain-grid">
             {domainSummary.map((domain) => (

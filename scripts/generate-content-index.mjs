@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertUniqueIds } from "./content-validation.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
@@ -12,21 +13,22 @@ function assert(condition, message) {
   if (!condition) throw new Error(`Content validation failed: ${message}`);
 }
 
-function uniqueIds(items, field, label) {
-  const values = items.map((item) => item[field]);
-  assert(values.every((value) => typeof value === "string" && value.trim()), `${label} IDs must be non-empty strings`);
-  assert(new Set(values).size === values.length, `${label} IDs must be unique`);
-}
-
-assert(map.master_count === 211 && map.company_question_count === 47 && map.topic_count === 35, "declared counts must remain 211 / 47 / 35");
-assert(map.master_questions.length === map.master_count, "master question count must match the manifest");
-assert(map.company_questions.length === map.company_question_count, "company variation count must match the manifest");
-assert(map.topics.length === map.topic_count && chapters.chapters.length === map.topic_count, "all 35 K chapters must have topic mappings");
-assert(chapters.chapters.reduce((sum, chapter) => sum + chapter.exercises.length, 0) === 70, "all 70 chapter exercises must be present");
-uniqueIds(map.master_questions, "qid", "master question");
-uniqueIds(map.company_questions, "qid", "company question");
-uniqueIds(map.topics, "topic_id", "topic");
-uniqueIds(chapters.chapters, "topic_id", "chapter");
+const actualCounts = {
+  master: map.master_questions.length,
+  company: map.company_questions.length,
+  topics: map.topics.length,
+  chapters: chapters.chapters.length,
+};
+assert(map.master_count === actualCounts.master && chapters.master_count === actualCounts.master, "declared master counts must match both content manifests");
+assert(map.company_question_count === actualCounts.company && chapters.company_question_count === actualCounts.company, "declared company counts must match both content manifests");
+assert(map.topic_count === actualCounts.topics && chapters.topic_count === actualCounts.topics && actualCounts.chapters === actualCounts.topics, "topic and chapter counts must match both content manifests");
+assert(chapters.chapters.every((chapter) => Array.isArray(chapter.exercises) && chapter.exercises.length === 2), "every chapter must keep the two-exercise contract");
+const exerciseCount = chapters.chapters.reduce((sum, chapter) => sum + chapter.exercises.length, 0);
+assert(exerciseCount === actualCounts.chapters * 2, "exercise count must match the two-exercise chapter contract");
+assertUniqueIds(map.master_questions, "qid", "master question");
+assertUniqueIds(map.company_questions, "qid", "company question");
+assertUniqueIds(map.topics, "topic_id", "topic");
+assertUniqueIds(chapters.chapters, "topic_id", "chapter");
 
 const masterIds = new Set(map.master_questions.map((question) => question.qid));
 const companyIds = new Set(map.company_questions.map((question) => question.qid));
@@ -123,7 +125,7 @@ fs.writeFileSync(path.join(contentDir, "content-manifest.generated.json"), `${JS
   masterQuestionCount: map.master_questions.length,
   companyQuestionCount: map.company_questions.length,
   chapterCount: chapters.chapters.length,
-  exerciseCount: chapters.chapters.reduce((sum, chapter) => sum + chapter.exercises.length, 0),
+  exerciseCount,
   domainCount: new Set(map.topics.map((topic) => topic.primary)).size,
 }, null, 2)}\n`);
 
@@ -132,7 +134,7 @@ console.log(JSON.stringify({
   masterQuestions: map.master_questions.length,
   companyVariants: map.company_questions.length,
   chapters: chapters.chapters.length,
-  exercises: chapters.chapters.reduce((sum, chapter) => sum + chapter.exercises.length, 0),
+  exercises: exerciseCount,
   domains: new Set(map.topics.map((topic) => topic.primary)).size,
   contentVersion: chapters.content_version,
   generated: ["question-index.generated.json", "topic-index.generated.json", "content-manifest.generated.json"],
