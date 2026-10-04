@@ -512,3 +512,76 @@ button, a { -webkit-tap-highlight-color: transparent; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* The coaching workspace is visible only in the local app runtime profile. */
+.coach-page { display: grid; gap: 1.2rem; }
+.coach-account-card, .coach-question-card, .coach-answer-card, .coach-result-card, .coach-guide-card, .coach-setup-card { gap: 0; padding: 0; }
+.coach-account-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 1rem; padding-top: 1.1rem; padding-bottom: 1.1rem; }
+.coach-account-main { display: flex; min-width: 0; align-items: center; gap: .85rem; }
+.coach-account-icon, .coach-setup-icon { display: grid; width: 2.7rem; height: 2.7rem; flex: 0 0 auto; place-items: center; border: 1px solid var(--border); border-radius: .8rem; background: #f4f6f1; color: #68776e; }
+.coach-account-icon.is-connected { border-color: #c3d8ca; background: #e9f2e9; color: #285347; }
+.coach-account-main strong { display: block; color: #263e33; font-family: var(--font-serif); font-size: 1.05rem; font-weight: 650; }
+.coach-account-main p, .coach-card-header > div > p { margin: .15rem 0 0; color: #6d7a73; font-size: .82rem; }
+.coach-account-actions { display: flex; align-items: center; justify-content: flex-end; gap: .5rem; }
+.coach-saved-profiles { display: grid; grid-column: 1 / -1; gap: .5rem; border-top: 1px solid #e7ebe6; padding-top: .8rem; }
+.coach-saved-profiles > p { margin: 0; color: #6d7a73; font-size: .78rem; font-weight: 650; }
+.coach-profile-line { display: flex; align-items: center; justify-content: space-between; gap: .75rem; border: 1px solid #e4e9e4; border-radius: .65rem; background: #fff; padding: .45rem .6rem .45rem .8rem; color: #40554a; font-size: .84rem; }
+.coach-workspace-grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(18rem, .82fr); align-items: start; gap: 1rem; }
+.coach-main-column, .coach-aside-column { display: grid; min-width: 0; gap: 1rem; }
+.coach-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem; padding: 1.1rem 1.25rem .9rem; }
+.coach-card-title { display: flex; align-items: center; gap: .55rem; color: #2b5142; font-family: var(--font-serif); font-size: 1.1rem; font-weight: 650; }
+.coach-card-title svg { flex: 0 0 auto; color: #35614f; }
+.coach-form-stack { display: grid; gap: 1rem; padding-bottom: 1.2rem; }
+.coach-field { display: grid; min-width: 0; gap: .42rem; }
+.coach-field > label { color: #40564a; font-size: .84rem; font-weight: 650; }
+.coach-selected-question { display: grid; gap: .4rem; border: 1px solid #dce5dc; border-radius: .8rem; background: #f4f7f1; padding: .9rem 1rem; }
+.coach-selected-question > div { display: flex; flex-wrap: wrap; gap: .4rem; }
+.coach-selected-question h2 { margin: .2rem 0 0; color: #263e33; font-family: var(--font-serif); font-size: 1.05rem; line-height: 1.5; }
+.coach-selected-question p { margin: 0; color: #708077; font-size: .77rem; }
+.coach-selected-question > a, .coach-foot-actions > a { display: inline-flex; width: fit-content; align-items: center; gap: .3rem; color: #376251; font-size: .78rem; font-weight: 650; }
+.coach-selected-question > a:hover, .coach-foot-actions > a:hover { text-decoration: underline; text-underline-offset: .18em; }
+.coach-answer-input { min-height: 12rem; resize: vertical; background: #fff; line-height: 1.75; }
+.coach-answer-meta { display: flex; justify-content: space-between; gap: .6rem; color: #748078; font-size: .73rem; }
+.coach-answer-meta .is-error { color: #a43d35; }
+.coach-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .8rem; }
+.coach-submit-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; border-top: 1px solid #e7ebe6; padding-top: .9rem; }
+.coach-privacy-copy { max-width: 25rem; color: #6e7a73; font-size: .75rem; line-height: 1.55; }
+.coach-result-card > [data-slot="card-content"] { display: grid; gap: .75rem; padding-bottom: 1.2rem; }
+.coach-result-text { max-height: min(65vh, 46rem); overflow: auto; border: 1px solid #e3e8e2; border-radius: .75rem; background: #fcfdfb; padding: 1rem; color: #344a3e; font-size: .92rem; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }
+.coach-empty-result { margin: 0; border: 1px dashed #d6ded6; border-radius: .75rem; background: #fafbf8; padding: .9rem; color: #77837c; font-size: .84rem; }
+.coach-note { display: flex; align-items: flex-start; gap: .45rem; margin: 0; color: #68786e; font-size: .78rem; line-height: 1.55; }
+.coach-note svg { flex: 0 0 auto; margin-top: .1rem; }
+.coach-note-error { color: #9b4038; }
+.coach-note-info { color: #315f4c; }
+.coach-note a { color: #285347; font-weight: 700; text-decoration: underline; text-underline-offset: .16em; }
+.coach-guide-list { display: grid; gap: .7rem; padding-bottom: 1.1rem; }
+.coach-guide-list p { margin: 0; color: #607168; font-size: .81rem; line-height: 1.65; }
+.coach-guide-list strong { color: #354c40; }
+.coach-foot-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; }
+.coach-offline, .coach-setup-copy { display: flex; align-items: center; gap: .85rem; padding-top: 1rem; padding-bottom: 1rem; color: #6a783f; }
+.coach-offline > svg { flex: 0 0 auto; color: #92611f; }
+.coach-offline strong, .coach-setup-copy h2 { color: #33493d; font-family: var(--font-serif); font-size: 1rem; font-weight: 650; }
+.coach-offline p, .coach-setup-copy p { margin: .15rem 0 0; color: #718078; font-size: .82rem; }
+.coach-setup-copy { justify-content: space-between; }
+.coach-setup-copy > div:nth-child(2) { flex: 1; }
+.coach-setup-copy h2 { margin: 0; }
+@media (max-width: 930px) {
+  .coach-workspace-grid { grid-template-columns: 1fr; }
+  .coach-aside-column { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .coach-result-card, .coach-foot-actions { grid-column: 1 / -1; }
+}
+@media (max-width: 680px) {
+  .coach-account-row { grid-template-columns: 1fr; }
+  .coach-account-actions { justify-content: flex-start; }
+  .coach-controls, .coach-aside-column { grid-template-columns: 1fr; }
+  .coach-result-card, .coach-foot-actions { grid-column: auto; }
+  .coach-submit-row { align-items: flex-start; flex-direction: column; }
+  .coach-privacy-copy { max-width: none; }
+  .coach-setup-copy { align-items: flex-start; flex-wrap: wrap; }
+  .coach-setup-copy > div:nth-child(2) { flex-basis: calc(100% - 3.6rem); }
+  .coach-profile-line { align-items: flex-start; flex-direction: column; }
+}
+@media (max-width: 767px) {
+  .app-frame.has-local-coach .mobile-nav { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .app-frame.has-local-coach .mobile-nav-link { font-size: .62rem; }
+}

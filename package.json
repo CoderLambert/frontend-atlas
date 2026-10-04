@@ -5,17 +5,23 @@
   "scripts": {
     "predev": "node scripts/generate-content-index.mjs",
     "dev": "next dev",
+    "local:dev": "node scripts/local-app.mjs dev",
+    "local:build": "node scripts/local-app.mjs build",
+    "local:start": "node scripts/local-app.mjs start",
     "prebuild": "node scripts/generate-content-index.mjs",
     "build": "next build",
     "prelint": "node scripts/generate-content-index.mjs",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test:backup": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-backup-validation.mjs"
+    "test:backup": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-backup-validation.mjs",
+    "test:siwc": "node --test server/*.test.mjs scripts/*.test.mjs",
+    "verify:static-boundary": "node scripts/test-static-boundary.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "jose": "^6.2.12",
     "lucide-react": "^1.52.0",
     "next": "16.3.8",
     "radix-ui": "^1.6.7",

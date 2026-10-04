@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, Clock3, Database, FileQuestion, Search, Sparkles } from "lucide-react";
+import { BookOpen, Clock3, Database, FileQuestion, Search, Sparkles, WandSparkles } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const navigation = [
@@ -12,16 +12,20 @@ const navigation = [
   { href: "/review/", label: "复习", icon: Clock3 },
 ];
 
+const localNavigation = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1"
+  ? [...navigation, { href: "/coach/", label: "AI答题教练", icon: WandSparkles }]
+  : navigation;
+
 function isCurrent(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
 }
 
 export function SiteShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const current = pathname.startsWith("/data/") ? "本设备数据" : navigation.find((item) => isCurrent(pathname, item.href))?.label ?? "学习台";
+  const current = pathname.startsWith("/data/") ? "本设备数据" : localNavigation.find((item) => isCurrent(pathname, item.href))?.label ?? "学习台";
 
   return (
-    <div className="app-frame">
+    <div className={cn("app-frame", process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1" && "has-local-coach")}>
       <a className="skip-link" href="#main-content">跳到主要内容</a>
       <aside className="desktop-sidebar" aria-label="主导航">
         <Link className="brand-lockup" href="/" aria-label="知序，返回学习台">
@@ -29,7 +33,7 @@ export function SiteShell({ children }: { children: React.ReactNode }) {
           <span className="brand-copy"><strong>知序</strong><small>FRONTEND ATLAS</small></span>
         </Link>
         <nav className="primary-nav">
-          {navigation.map(({ href, label, icon: Icon }) => {
+          {localNavigation.map(({ href, label, icon: Icon }) => {
             const active = isCurrent(pathname, href);
             return (
               <Link key={href} href={href} className={cn("nav-link", active && "is-active")} aria-current={active ? "page" : undefined}>
@@ -67,7 +71,7 @@ export function SiteShell({ children }: { children: React.ReactNode }) {
       </div>
 
       <nav className="mobile-nav" aria-label="底部导航">
-        {navigation.map(({ href, label, icon: Icon }) => {
+        {localNavigation.map(({ href, label, icon: Icon }) => {
           const active = isCurrent(pathname, href);
           return (
             <Link key={href} href={href} className={cn("mobile-nav-link", active && "is-active")} aria-current={active ? "page" : undefined}>

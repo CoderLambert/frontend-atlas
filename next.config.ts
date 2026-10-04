@@ -1,7 +1,14 @@
 import type { NextConfig } from "next";
 
+const localAppMode = process.env.FRONTEND_ATLAS_LOCAL_MODE === "1";
+const publicLocalAppMode = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
+
+if (localAppMode !== publicLocalAppMode) {
+  throw new Error("The private and public Frontend Atlas runtime flags must match. Use npm run local:dev or npm run build.");
+}
+
 const nextConfig: NextConfig = {
-  output: "export",
+  ...(localAppMode ? {} : { output: "export" as const }),
   trailingSlash: true,
   images: { unoptimized: true },
   poweredByHeader: false,
