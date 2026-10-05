@@ -84,8 +84,8 @@ function ErrorNote({ children }: { children: React.ReactNode }) {
   return <p className="coach-note coach-note-error" role="alert"><AlertCircle size={16} aria-hidden="true" />{children}</p>;
 }
 
-export function CoachWorkspace({ questions, contentVersion }: { questions: CoachQuestion[]; contentVersion: string }) {
-  const [selectedId, setSelectedId] = useState("D13");
+export function CoachWorkspace({ questions, contentVersion, initialQuestionId }: { questions: CoachQuestion[]; contentVersion: string; initialQuestionId: string }) {
+  const [selectedId, setSelectedId] = useState(initialQuestionId);
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<Mode>("critique");
   const [answer, setAnswer] = useState("");
@@ -725,6 +725,7 @@ export function CoachWorkspace({ questions, contentVersion }: { questions: Coach
                 <p><strong>只在本机提供服务。</strong>OAuth 回调、会话和模型请求由本地 Node 服务处理；静态网站不会携带登录凭据。</p>
                 <p><strong>没有自动回退。</strong>如果账号无权限或用量不可用，页面会提示原因，不切换 API Key 计费。</p>
                 <p><strong>草稿留在设备上。</strong>练习回答保存在本机 IndexedDB；点击发送时才把当前问题与回答发给 OpenAI。</p>
+                <Link href="/ai-assist/">查看本机设置步骤与功能状态 <ArrowUpRight size={14} aria-hidden="true" /></Link>
               </CardContent>
             </Card>
 

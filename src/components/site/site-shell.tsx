@@ -12,9 +12,10 @@ const navigation = [
   { href: "/review/", label: "复习", icon: Clock3 },
 ];
 
-const localNavigation = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1"
+const isLocalCoachEnabled = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
+const localNavigation = isLocalCoachEnabled
   ? [...navigation, { href: "/coach/", label: "AI答题教练", icon: WandSparkles }]
-  : navigation;
+  : [...navigation, { href: "/ai-assist/", label: "AI辅助", icon: WandSparkles }];
 
 function isCurrent(pathname: string, href: string) {
   return href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -25,7 +26,7 @@ export function SiteShell({ children }: { children: React.ReactNode }) {
   const current = pathname.startsWith("/data/") ? "本设备数据" : localNavigation.find((item) => isCurrent(pathname, item.href))?.label ?? "学习台";
 
   return (
-    <div className={cn("app-frame", process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1" && "has-local-coach")}>
+    <div className={cn("app-frame", isLocalCoachEnabled && "has-local-coach")}>
       <a className="skip-link" href="#main-content">跳到主要内容</a>
       <aside className="desktop-sidebar" aria-label="主导航">
         <Link className="brand-lockup" href="/" aria-label="知序，返回学习台">

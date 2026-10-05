@@ -25,6 +25,17 @@ const coachRouteHtml = await readFile(coachRoute, "utf8").catch(() => "");
 assert.match(coachRouteHtml, /404: This page could not be found\./u, "The local-only coach route must remain a 404 in static export.");
 assert.doesNotMatch(coachRouteHtml, /Continue with ChatGPT|AI 答题教练|练习反馈/u, "The static coach route must not render the local interactive UI.");
 
+const aiGuideRoute = path.join(outputRoot, "ai-assist", "index.html");
+const aiGuideHtml = await readFile(aiGuideRoute, "utf8").catch(() => "");
+assert.match(aiGuideHtml, /AI 辅助练习/u, "The static site must expose the AI setup guide.");
+assert.match(aiGuideHtml, /git clone https:\/\/github\.com\/CoderLambert\/frontend-atlas\.git/u, "The guide must include exact setup commands.");
+assert.match(aiGuideHtml, /git status --short/u, "The guide must tell people to check for local changes before updating.");
+assert.match(aiGuideHtml, /git pull --ff-only/u, "The guide must use a non-forced update for an existing clone.");
+assert.match(aiGuideHtml, /当前本机版未提供手机直接运行方案/u, "The guide must describe the mobile runtime boundary accurately.");
+assert.match(aiGuideHtml, /真实 ChatGPT 账号登录、订阅用量授权与模型请求尚未实测/u, "The guide must state that live account testing is pending.");
+assert.match(aiGuideHtml, /AI辅助/u, "The static navigation must make the AI guide discoverable.");
+assert.doesNotMatch(aiGuideHtml, /Continue with ChatGPT/u, "The static guide must not present a nonfunctional login button.");
+
 const forbidden = [
   "dynamic_agent_client",
   "chatgpt.tokens.use.direct",

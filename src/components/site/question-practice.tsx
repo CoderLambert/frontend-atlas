@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, CheckCircle2, Clock3, Eye, FileQuestion, RotateCcw, Save } from "lucide-react";
+import { BookOpen, CheckCircle2, Clock3, Eye, FileQuestion, RotateCcw, Save, WandSparkles } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -455,6 +455,14 @@ export function QuestionPractice({
             <Link className="related-topic" href={"/knowledge/" + topicId + "/"}><span>{topicTitle}</span><small>{topicId} · {sourceLabel}</small></Link>
             <p>先读核心模型与边界，再回来练习表达。</p>
             <Link className="related-return" href={"/knowledge/" + topicId + "/"}><BookOpen size={15} aria-hidden="true" />回到知识章节</Link>
+          </Card>
+          <Card className="related-card ai-assist-entry">
+            <div className="card-heading"><WandSparkles size={18} aria-hidden="true" /><span>AI 辅助本题</span></div>
+            <p>可使用本机 ChatGPT 教练获取提示、原理讲解或参考点评；建议仍由你自己完成。</p>
+            <Link className="related-return" href={(process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1" ? "/coach/" : "/ai-assist/") + "?qid=" + encodeURIComponent(question.qid)}>
+              {process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1" ? "打开本机教练" : "查看本机设置步骤"}
+              <WandSparkles size={15} aria-hidden="true" />
+            </Link>
           </Card>
           <Card className="session-card">
             <div className="card-heading"><FileQuestion size={18} aria-hidden="true" /><span>本题记录</span></div>
