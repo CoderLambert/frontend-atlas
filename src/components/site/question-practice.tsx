@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { CodeBlock } from "@/components/ui/code-block";
 import { checkpointsFor, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
 import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type SelfRating } from "@/lib/study-store";
 
@@ -46,7 +47,7 @@ function RichAnswer({ blocks }: { blocks: ContentBlock[] }) {
   return (
     <div className="rich-answer">
       {blocks.map((block, index) => {
-        if (block.kind === "code") return <pre className="code-block" key={index}><code>{block.text}</code></pre>;
+        if (block.kind === "code") return <CodeBlock code={block.text} language={block.language ?? "typescript"} key={index} />;
         if (block.kind === "heading") return <h3 className="answer-heading" key={index}>{block.text}</h3>;
         return (
           <div className="answer-paragraph" key={index}>

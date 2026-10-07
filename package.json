@@ -14,11 +14,14 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "test:coach": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/coach-experience.test.mjs",
     "test:backup": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-backup-validation.mjs",
     "test:siwc": "node --test server/*.test.mjs scripts/*.test.mjs",
     "verify:static-boundary": "node scripts/test-static-boundary.mjs"
   },
   "dependencies": {
+    "@shikijs/langs": "^4.5.0",
+    "@shikijs/themes": "^4.5.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "jose": "^6.2.12",
@@ -27,6 +30,8 @@
     "radix-ui": "^1.6.7",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "react-markdown": "^10.1.0",
+    "shiki": "^4.5.0",
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.7.0"
   },

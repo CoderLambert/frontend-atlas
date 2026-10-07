@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { AlertCircle, ArrowUpRight, CheckCircle2, CircleHelp, LoaderCircle, LogOut, RotateCw, Sparkles, Square, WandSparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -11,9 +12,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { getStudySnapshot, saveAttempt, saveDraft, type Attempt } from "@/lib/study-store";
+import { createRequestEpoch } from "@/lib/request-epoch.mjs";
 
 const API_ORIGIN = "http://127.0.0.1:4317";
 const LOCAL_MODE = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
+const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
+  loading: () => <p className="coach-note">正在准备回复排版…</p>,
+});
 
 export type CoachQuestion = {
   qid: string;
@@ -100,6 +105,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   const [modelsLoading, setModelsLoading] = useState(false);
   const [result, setResult] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [retryAvailable, setRetryAvailable] = useState(false);
   const [error, setError] = useState("");
   const [info, setInfo] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
@@ -107,6 +113,13 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   const [fallbackAuthorizeUrl, setFallbackAuthorizeUrl] = useState("");
   const [logoutBusy, setLogoutBusy] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const requestEpochRef = useRef(createRequestEpoch());
+  const lastRequestRef = useRef<{ questionId: string; mode: Mode; model: string; answer: string } | null>(null);
+  const pendingResultRef = useRef("");
+  const resultFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resultScrollRef = useRef<HTMLDivElement | null>(null);
+  const followResultRef = useRef(true);
+  const [showLatestButton, setShowLatestButton] = useState(false);
   const authPollRef = useRef<AbortController | null>(null);
   const attemptRef = useRef<Attempt | null>(null);
   const currentQidRef = useRef(selectedId);
@@ -206,9 +219,18 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
 
   useEffect(() => () => {
     authPollRef.current?.abort();
+    requestEpochRef.current.invalidate();
+    abortRef.current?.abort();
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    if (resultFlushTimerRef.current) clearTimeout(resultFlushTimerRef.current);
     void flushDraftRef.current();
   }, []);
+
+  useEffect(() => {
+    if (!followResultRef.current) return;
+    const container = resultScrollRef.current;
+    if (container) container.scrollTop = container.scrollHeight;
+  }, [result]);
 
   const refreshSession = useCallback(async () => {
     if (!LOCAL_MODE) return;
@@ -376,10 +398,10 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   }
 
   async function logOut() {
-    abortRef.current?.abort();
-    abortRef.current = null;
-    setStreaming(false);
+    stopGeneration();
     setResult("");
+    lastRequestRef.current = null;
+    setRetryAvailable(false);
     setLogoutBusy(true);
     setError("");
     setInfo("");
@@ -407,10 +429,13 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   }
 
   async function selectQuestion(value: string) {
+    stopGeneration();
     await flushDraftRef.current();
     setSelectedId(value);
     setQuery("");
     setResult("");
+    lastRequestRef.current = null;
+    setRetryAvailable(false);
     setError("");
   }
 
@@ -421,21 +446,71 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       setError("先写下你的回答，再请教练逐项点评。");
       return;
     }
+    const request = { questionId: selectedQuestion.qid, mode, model, answer };
+    await runFeedback(request, false);
+  }
+
+  function stopGeneration(message = "已停止生成；部分回复已保留，当前回答草稿仍在输入框中。") {
+    const controller = abortRef.current;
+    if (!controller) return;
+    requestEpochRef.current.invalidate();
+    abortRef.current = null;
+    controller.abort();
+    if (resultFlushTimerRef.current) clearTimeout(resultFlushTimerRef.current);
+    resultFlushTimerRef.current = null;
+    if (pendingResultRef.current) {
+      setResult((current) => current + pendingResultRef.current);
+      pendingResultRef.current = "";
+    }
+    setStreaming(false);
+    setRetryAvailable(true);
+    setInfo(message);
+  }
+
+  async function runFeedback(request: { questionId: string; mode: Mode; model: string; answer: string }, retry: boolean) {
+    if (!retry) lastRequestRef.current = request;
     await flushDraftRef.current();
     abortRef.current?.abort();
+    const runEpoch = requestEpochRef.current.next();
     const controller = new AbortController();
     abortRef.current = controller;
+    if (resultFlushTimerRef.current) clearTimeout(resultFlushTimerRef.current);
+    resultFlushTimerRef.current = null;
+    pendingResultRef.current = "";
+    followResultRef.current = true;
+    setShowLatestButton(false);
     setResult("");
     setError("");
     setInfo("");
     setStreaming(true);
+    setRetryAvailable(false);
+    const isCurrent = () => requestEpochRef.current.isCurrent(runEpoch) && abortRef.current === controller;
+    const queueResult = (text: string) => {
+      if (!isCurrent()) return;
+      pendingResultRef.current += text;
+      if (resultFlushTimerRef.current) return;
+      resultFlushTimerRef.current = setTimeout(() => {
+        resultFlushTimerRef.current = null;
+        if (!isCurrent()) return;
+        const next = pendingResultRef.current;
+        pendingResultRef.current = "";
+        if (next) setResult((current) => current + next);
+      }, 48);
+    };
+    const flushQueuedResult = () => {
+      if (resultFlushTimerRef.current) clearTimeout(resultFlushTimerRef.current);
+      resultFlushTimerRef.current = null;
+      const pending = pendingResultRef.current;
+      pendingResultRef.current = "";
+      if (pending && isCurrent()) setResult((current) => current + pending);
+    };
     try {
       const response = await fetch(`${API_ORIGIN}/api/coaching`, {
         method: "POST",
         credentials: "include",
         cache: "no-store",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ questionId: selectedQuestion.qid, mode, model, answer }),
+        body: JSON.stringify(request),
         signal: controller.signal,
       });
       if (!response.ok) {
@@ -462,7 +537,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
         if (!dataLines.length) return;
         try {
           const data = JSON.parse(dataLines.join("\n"));
-          if (event === "delta" && typeof data === "string") setResult((current) => current + data);
+          if (event === "delta" && typeof data === "string") queueResult(data);
           if (event === "done") completed = data.completed === true;
           if (event === "error") streamError = typeof data.message === "string" ? data.message : "模型响应没有完整结束。";
         } catch {
@@ -485,16 +560,44 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       if (buffer.trim()) processEvent(buffer);
       await reader.cancel();
       reader.releaseLock();
-      if (streamError) setError(streamError);
-      else if (completed) setInfo("反馈已完整生成。模型意见只是练习建议，不是招聘结论或权威评分。");
-      else setError("响应没有确认完整结束；请检查后再决定是否重新发送。");
+      flushQueuedResult();
+      if (!isCurrent()) return;
+      if (streamError) {
+        setError(streamError);
+        setRetryAvailable(true);
+      } else if (completed) {
+        setInfo("反馈已完整生成。模型意见只是练习建议，不是招聘结论或权威评分。");
+        setRetryAvailable(false);
+      } else {
+        setError("响应没有确认完整结束；请检查后再决定是否重新发送。");
+        setRetryAvailable(true);
+      }
     } catch (cause) {
+      if (!isCurrent()) return;
+      flushQueuedResult();
       if (controller.signal.aborted) setInfo("已停止生成；这次反馈未确认完整结束。");
       else setError(cause instanceof Error ? cause.message : "模型请求没有完成。没有切换到其他计费方式。");
+      setRetryAvailable(true);
     } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-      setStreaming(false);
+      if (isCurrent()) {
+        abortRef.current = null;
+        setStreaming(false);
+      }
     }
+  }
+
+  function retryLastFeedback() {
+    const previous = lastRequestRef.current;
+    if (!previous || !status.authenticated || !status.allowedModelsAvailable) return;
+    void runFeedback(previous, true);
+  }
+
+  function returnResultToLatest() {
+    const container = resultScrollRef.current;
+    if (!container) return;
+    followResultRef.current = true;
+    container.scrollTop = container.scrollHeight;
+    setShowLatestButton(false);
   }
 
   if (!LOCAL_MODE) return null;
@@ -667,7 +770,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
                 <div className="coach-controls">
                   <div className="coach-field">
                     <Label htmlFor="coach-mode">练习方式</Label>
-                    <Select value={mode} onValueChange={(value) => setMode(value as Mode)}>
+                    <Select value={mode} onValueChange={(value) => { setMode(value as Mode); setRetryAvailable(false); }}>
                       <SelectTrigger id="coach-mode"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="hint">给我一条提示</SelectItem>
@@ -678,7 +781,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
                   </div>
                   <div className="coach-field">
                     <Label htmlFor="coach-model">可用模型</Label>
-                    <Select value={model} onValueChange={setModel} disabled={modelsLoading || models.length === 0}>
+                    <Select value={model} onValueChange={(value) => { setModel(value); setRetryAvailable(false); }} disabled={modelsLoading || models.length === 0}>
                       <SelectTrigger id="coach-model"><SelectValue placeholder={modelsLoading ? "读取模型中…" : "选择模型"} /></SelectTrigger>
                       <SelectContent>
                         {models.map((item) => <SelectItem key={item.slug} value={item.slug}>{item.displayName}</SelectItem>)}
@@ -689,7 +792,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
                 <div className="coach-submit-row">
                   <div className="coach-privacy-copy">发送后，本题、参考内容和你的回答会发往 OpenAI Responses API 生成反馈。请求使用 store:false；本地页面不保存 AI 对话。</div>
                   {streaming ? (
-                    <Button type="button" variant="outline" onClick={() => abortRef.current?.abort()}><Square size={15} aria-hidden="true" />停止生成</Button>
+                    <Button type="button" variant="outline" onClick={() => stopGeneration()}><Square size={15} aria-hidden="true" />停止生成</Button>
                   ) : (
                     <Button type="submit" disabled={!model || !selectedQuestion || modelsLoading || localSaveState === "error"}>
                       {modelsLoading ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />}
@@ -705,15 +808,29 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
             <Card className="coach-result-card">
               <CardHeader className="coach-card-header">
                 <div><CardTitle className="coach-card-title"><Sparkles size={18} aria-hidden="true" />练习反馈</CardTitle><p>{streaming ? "正在接收模型回复…" : "完成一次练习后，反馈会显示在这里。"}</p></div>
-                {streaming && <LoaderCircle className="animate-spin" size={18} aria-label="正在生成" />}
+                {streaming && <LoaderCircle className="animate-spin" size={18} aria-hidden="true" />}
               </CardHeader>
               <CardContent>
                 {error && <ErrorNote>{error}</ErrorNote>}
                 {info && <p className="coach-note coach-note-info" role="status"><CheckCircle2 size={16} aria-hidden="true" />{info}</p>}
                 {modelsLoading && <p className="coach-note"><LoaderCircle size={15} className="animate-spin" aria-hidden="true" />正在读取账号可用模型。</p>}
                 {!modelsLoading && models.length === 0 && <Button type="button" variant="outline" size="sm" onClick={() => void loadModels()} disabled={!status.allowedModelsAvailable}><RotateCw size={14} aria-hidden="true" />刷新模型列表</Button>}
-                {result && <div className="coach-result-text" aria-live="polite" aria-atomic="false">{result}</div>}
-                {!result && !streaming && !error && <p className="coach-empty-result">这里会显示提示、原理讲解或逐项点评。若生成中断，请检查完整性后再决定是否重新发送。</p>}
+                <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{streaming ? "正在接收教练回复。" : ""}</p>
+                <div
+                  className="coach-result-text"
+                  ref={resultScrollRef}
+                  onScroll={(event) => {
+                    const element = event.currentTarget;
+                    const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+                    followResultRef.current = atLatest;
+                    setShowLatestButton(!atLatest && element.scrollHeight > element.clientHeight);
+                  }}
+                  aria-label="教练回复内容"
+                >
+                  {result ? <CoachMarkdown source={result} streaming={streaming} /> : !streaming && !error && <p className="coach-empty-result">这里会显示提示、原理讲解或逐项点评。回答未完成时可以停止；需要时可重试上次发送内容。</p>}
+                </div>
+                {showLatestButton && <Button type="button" variant="outline" size="sm" className="coach-latest-button" onClick={returnResultToLatest}>回到最新回复</Button>}
+                {retryAvailable && lastRequestRef.current?.questionId === selectedQuestion?.qid && lastRequestRef.current.mode === mode && lastRequestRef.current.model === model && <Button type="button" variant="outline" size="sm" onClick={retryLastFeedback}><RotateCw size={14} aria-hidden="true" />重试上次发送内容</Button>}
                 {status.authenticated && !status.allowedModelsAvailable && <ErrorNote>此账号没有授予 ChatGPT 计划用量；不会改用 API Key 或其他计费方式。</ErrorNote>}
               </CardContent>
             </Card>
