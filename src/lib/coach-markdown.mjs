@@ -1,3 +1,5 @@
+import { createElement } from "react";
+
 export function splitTrailingUnclosedFence(markdown) {
   const lines = markdown.match(/[^\n]*\n|[^\n]+$/gu) ?? [];
   let offset = 0;
@@ -25,4 +27,10 @@ export function splitTrailingUnclosedFence(markdown) {
     body: markdown.slice(0, open.offset),
     unfinishedCode: firstLineBreak ? unfinishedFence.slice(unfinishedFence.indexOf(firstLineBreak) + firstLineBreak.length) : "",
   };
+}
+
+/** @param {{ alt?: string }} props */
+export function CoachMarkdownImage({ alt } = {}) {
+  if (!alt) return null;
+  return createElement("span", { className: "coach-markdown-image-alt" }, `图片说明：${alt}`);
 }

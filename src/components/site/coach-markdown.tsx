@@ -3,7 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import { Children, isValidElement, type ReactNode } from "react";
 import { CodeBlock } from "@/components/ui/code-block";
-import { splitTrailingUnclosedFence } from "@/lib/coach-markdown.mjs";
+import { CoachMarkdownImage, splitTrailingUnclosedFence } from "@/lib/coach-markdown.mjs";
 import { safeMarkdownHref } from "@/lib/safe-markdown-url.mjs";
 
 export function CoachMarkdown({ source, streaming }: { source: string; streaming: boolean }) {
@@ -12,6 +12,7 @@ export function CoachMarkdown({ source, streaming }: { source: string; streaming
     <div className="coach-markdown">
       <ReactMarkdown
         components={{
+          img: CoachMarkdownImage,
           a: ({ href, children }) => {
             const safe = safeMarkdownHref(href);
             return safe ? <a href={safe} target="_blank" rel="noreferrer">{children}</a> : <span>{children}</span>;

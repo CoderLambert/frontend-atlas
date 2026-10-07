@@ -12,7 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { getStudySnapshot, saveAttempt, saveDraft, type Attempt } from "@/lib/study-store";
-import { createRequestEpoch } from "@/lib/request-epoch.mjs";
+import { afterPreparation, createRequestLifecycle, discardRequestBuffer, flushRequestBuffer, takeRequestBuffer } from "@/lib/request-epoch.mjs";
 
 const API_ORIGIN = "http://127.0.0.1:4317";
 const LOCAL_MODE = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
@@ -104,6 +104,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   const [model, setModel] = useState("");
   const [modelsLoading, setModelsLoading] = useState(false);
   const [result, setResult] = useState("");
+  const [preparing, setPreparing] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [retryAvailable, setRetryAvailable] = useState(false);
   const [error, setError] = useState("");
@@ -112,11 +113,8 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   const [authWaiting, setAuthWaiting] = useState(false);
   const [fallbackAuthorizeUrl, setFallbackAuthorizeUrl] = useState("");
   const [logoutBusy, setLogoutBusy] = useState(false);
-  const abortRef = useRef<AbortController | null>(null);
-  const requestEpochRef = useRef(createRequestEpoch());
+  const requestLifecycleRef = useRef(createRequestLifecycle());
   const lastRequestRef = useRef<{ questionId: string; mode: Mode; model: string; answer: string } | null>(null);
-  const pendingResultRef = useRef("");
-  const resultFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resultScrollRef = useRef<HTMLDivElement | null>(null);
   const followResultRef = useRef(true);
   const [showLatestButton, setShowLatestButton] = useState(false);
@@ -219,10 +217,10 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
 
   useEffect(() => () => {
     authPollRef.current?.abort();
-    requestEpochRef.current.invalidate();
-    abortRef.current?.abort();
+    const activeRequest = requestLifecycleRef.current.invalidate();
+    activeRequest?.controller?.abort();
+    if (activeRequest) discardRequestBuffer(activeRequest);
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    if (resultFlushTimerRef.current) clearTimeout(resultFlushTimerRef.current);
     void flushDraftRef.current();
   }, []);
 
@@ -451,60 +449,54 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   }
 
   function stopGeneration(message = "已停止生成；部分回复已保留，当前回答草稿仍在输入框中。") {
-    const controller = abortRef.current;
-    if (!controller) return;
-    requestEpochRef.current.invalidate();
-    abortRef.current = null;
-    controller.abort();
-    if (resultFlushTimerRef.current) clearTimeout(resultFlushTimerRef.current);
-    resultFlushTimerRef.current = null;
-    if (pendingResultRef.current) {
-      setResult((current) => current + pendingResultRef.current);
-      pendingResultRef.current = "";
-    }
+    const activeRequest = requestLifecycleRef.current.invalidate();
+    if (!activeRequest) return;
+    const wasStreaming = activeRequest.phase === "streaming";
+    activeRequest.controller?.abort();
+    const pending = takeRequestBuffer(activeRequest);
+    if (pending) setResult((current) => current + pending);
+    setPreparing(false);
     setStreaming(false);
-    setRetryAvailable(true);
-    setInfo(message);
+    setRetryAvailable(wasStreaming);
+    setInfo(wasStreaming ? message : "已取消待发送的反馈；尚未发出模型请求。");
   }
 
   async function runFeedback(request: { questionId: string; mode: Mode; model: string; answer: string }, retry: boolean) {
     if (!retry) lastRequestRef.current = request;
-    await flushDraftRef.current();
-    abortRef.current?.abort();
-    const runEpoch = requestEpochRef.current.next();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    if (resultFlushTimerRef.current) clearTimeout(resultFlushTimerRef.current);
-    resultFlushTimerRef.current = null;
-    pendingResultRef.current = "";
+    const { request: activeRequest, previous } = requestLifecycleRef.current.begin();
+    if (previous) {
+      previous.controller?.abort();
+      discardRequestBuffer(previous);
+    }
     followResultRef.current = true;
     setShowLatestButton(false);
     setResult("");
     setError("");
     setInfo("");
-    setStreaming(true);
+    setPreparing(true);
+    setStreaming(false);
     setRetryAvailable(false);
-    const isCurrent = () => requestEpochRef.current.isCurrent(runEpoch) && abortRef.current === controller;
+    const isCurrent = () => requestLifecycleRef.current.isCurrent(activeRequest);
     const queueResult = (text: string) => {
       if (!isCurrent()) return;
-      pendingResultRef.current += text;
-      if (resultFlushTimerRef.current) return;
-      resultFlushTimerRef.current = setTimeout(() => {
-        resultFlushTimerRef.current = null;
-        if (!isCurrent()) return;
-        const next = pendingResultRef.current;
-        pendingResultRef.current = "";
-        if (next) setResult((current) => current + next);
+      activeRequest.buffer += text;
+      if (activeRequest.timer !== null) return;
+      activeRequest.timer = setTimeout(() => {
+        flushRequestBuffer(activeRequest, isCurrent, (next) => setResult((current) => current + next));
       }, 48);
     };
     const flushQueuedResult = () => {
-      if (resultFlushTimerRef.current) clearTimeout(resultFlushTimerRef.current);
-      resultFlushTimerRef.current = null;
-      const pending = pendingResultRef.current;
-      pendingResultRef.current = "";
-      if (pending && isCurrent()) setResult((current) => current + pending);
+      flushRequestBuffer(activeRequest, isCurrent, (pending) => setResult((current) => current + pending));
     };
     try {
+      const started = await afterPreparation(activeRequest, isCurrent, () => flushDraftRef.current(), () => {
+        activeRequest.controller = new AbortController();
+        activeRequest.phase = "streaming";
+        setPreparing(false);
+        setStreaming(true);
+      });
+      if (!started || !isCurrent() || !activeRequest.controller) return;
+      const controller = activeRequest.controller;
       const response = await fetch(`${API_ORIGIN}/api/coaching`, {
         method: "POST",
         credentials: "include",
@@ -513,8 +505,10 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
         body: JSON.stringify(request),
         signal: controller.signal,
       });
+      if (!isCurrent()) return;
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
+        if (!isCurrent()) return;
         throw new Error(typeof data.message === "string" ? data.message : "模型请求没有完成。");
       }
       const reader = response.body?.getReader();
@@ -546,6 +540,11 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       };
       while (true) {
         const { done, value } = await reader.read();
+        if (!isCurrent()) {
+          void reader.cancel().catch(() => {});
+          reader.releaseLock();
+          return;
+        }
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         let boundary;
@@ -559,6 +558,10 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       buffer += decoder.decode();
       if (buffer.trim()) processEvent(buffer);
       await reader.cancel();
+      if (!isCurrent()) {
+        reader.releaseLock();
+        return;
+      }
       reader.releaseLock();
       flushQueuedResult();
       if (!isCurrent()) return;
@@ -575,12 +578,13 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     } catch (cause) {
       if (!isCurrent()) return;
       flushQueuedResult();
-      if (controller.signal.aborted) setInfo("已停止生成；这次反馈未确认完整结束。");
+      if (activeRequest.controller?.signal.aborted) setInfo("已停止生成；这次反馈未确认完整结束。");
       else setError(cause instanceof Error ? cause.message : "模型请求没有完成。没有切换到其他计费方式。");
       setRetryAvailable(true);
     } finally {
       if (isCurrent()) {
-        abortRef.current = null;
+        requestLifecycleRef.current.finish(activeRequest);
+        setPreparing(false);
         setStreaming(false);
       }
     }
@@ -791,8 +795,8 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
                 </div>
                 <div className="coach-submit-row">
                   <div className="coach-privacy-copy">发送后，本题、参考内容和你的回答会发往 OpenAI Responses API 生成反馈。请求使用 store:false；本地页面不保存 AI 对话。</div>
-                  {streaming ? (
-                    <Button type="button" variant="outline" onClick={() => stopGeneration()}><Square size={15} aria-hidden="true" />停止生成</Button>
+                  {streaming || preparing ? (
+                    <Button type="button" variant="outline" onClick={() => stopGeneration()}><Square size={15} aria-hidden="true" />{preparing ? "取消等待" : "停止生成"}</Button>
                   ) : (
                     <Button type="submit" disabled={!model || !selectedQuestion || modelsLoading || localSaveState === "error"}>
                       {modelsLoading ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Sparkles aria-hidden="true" />}
@@ -807,15 +811,15 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
           <aside className="coach-aside-column" aria-label="教练反馈与说明">
             <Card className="coach-result-card">
               <CardHeader className="coach-card-header">
-                <div><CardTitle className="coach-card-title"><Sparkles size={18} aria-hidden="true" />练习反馈</CardTitle><p>{streaming ? "正在接收模型回复…" : "完成一次练习后，反馈会显示在这里。"}</p></div>
-                {streaming && <LoaderCircle className="animate-spin" size={18} aria-hidden="true" />}
+                <div><CardTitle className="coach-card-title"><Sparkles size={18} aria-hidden="true" />练习反馈</CardTitle><p>{preparing ? "正在保存本机草稿…" : streaming ? "正在接收模型回复…" : "完成一次练习后，反馈会显示在这里。"}</p></div>
+                {(preparing || streaming) && <LoaderCircle className="animate-spin" size={18} aria-hidden="true" />}
               </CardHeader>
               <CardContent>
                 {error && <ErrorNote>{error}</ErrorNote>}
                 {info && <p className="coach-note coach-note-info" role="status"><CheckCircle2 size={16} aria-hidden="true" />{info}</p>}
                 {modelsLoading && <p className="coach-note"><LoaderCircle size={15} className="animate-spin" aria-hidden="true" />正在读取账号可用模型。</p>}
                 {!modelsLoading && models.length === 0 && <Button type="button" variant="outline" size="sm" onClick={() => void loadModels()} disabled={!status.allowedModelsAvailable}><RotateCw size={14} aria-hidden="true" />刷新模型列表</Button>}
-                <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{streaming ? "正在接收教练回复。" : ""}</p>
+                <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{preparing ? "正在保存本机回答草稿。" : streaming ? "正在接收教练回复。" : ""}</p>
                 <div
                   className="coach-result-text"
                   ref={resultScrollRef}
@@ -827,7 +831,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
                   }}
                   aria-label="教练回复内容"
                 >
-                  {result ? <CoachMarkdown source={result} streaming={streaming} /> : !streaming && !error && <p className="coach-empty-result">这里会显示提示、原理讲解或逐项点评。回答未完成时可以停止；需要时可重试上次发送内容。</p>}
+                  {result ? <CoachMarkdown source={result} streaming={streaming} /> : !streaming && !preparing && !error && <p className="coach-empty-result">这里会显示提示、原理讲解或逐项点评。回答未完成时可以停止；需要时可重试上次发送内容。</p>}
                 </div>
                 {showLatestButton && <Button type="button" variant="outline" size="sm" className="coach-latest-button" onClick={returnResultToLatest}>回到最新回复</Button>}
                 {retryAvailable && lastRequestRef.current?.questionId === selectedQuestion?.qid && lastRequestRef.current.mode === mode && lastRequestRef.current.model === model && <Button type="button" variant="outline" size="sm" onClick={retryLastFeedback}><RotateCw size={14} aria-hidden="true" />重试上次发送内容</Button>}
