@@ -9,6 +9,7 @@ if (localAppMode !== publicLocalAppMode) {
 
 const nextConfig: NextConfig = {
   ...(localAppMode ? {} : { output: "export" as const }),
+  pageExtensions: localAppMode ? ["js", "jsx", "ts", "tsx", "node.ts"] : ["js", "jsx", "ts", "tsx"],
   trailingSlash: true,
   images: { unoptimized: true },
   poweredByHeader: false,
