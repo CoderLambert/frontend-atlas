@@ -1,6 +1,7 @@
 "use client";
 
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { Children, isValidElement, type ReactNode } from "react";
 import { CodeBlock } from "@/components/ui/code-block";
 import { CoachMarkdownImage, splitTrailingUnclosedFence } from "@/lib/coach-markdown.mjs";
@@ -11,12 +12,14 @@ export function CoachMarkdown({ source, streaming }: { source: string; streaming
   return (
     <div className="coach-markdown">
       <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
         components={{
           img: CoachMarkdownImage,
           a: ({ href, children }) => {
             const safe = safeMarkdownHref(href);
             return safe ? <a href={safe} target="_blank" rel="noreferrer">{children}</a> : <span>{children}</span>;
           },
+          table: ({ children }) => <div className="markdown-table-scroll"><table>{children}</table></div>,
           pre: ({ children }) => {
             const child = Children.toArray(children)[0];
             if (!isValidElement<{ className?: string; children?: ReactNode }>(child) || child.type !== "code") {
