@@ -726,6 +726,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .coach-account-page { display: grid; min-width: 0; gap: 1rem; }
 .coach-account-model-notice, .coach-account-identity, .coach-account-session-list-card, .coach-account-session-detail, .coach-account-login-card { gap: 0; padding: 0; }
 .coach-account-model-notice > [data-slot="card-content"] { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-top: .9rem; padding-bottom: .9rem; }
+.coach-account-model-actions { display: flex; flex: 0 0 auto; align-items: center; gap: .55rem; }
 .coach-account-model-notice strong { color: #29483a; font-family: var(--font-serif); font-size: .95rem; }
 .coach-account-model-notice p { margin: .2rem 0 0; color: #68786e; font-size: .8rem; line-height: 1.6; }
 .coach-account-loading { display: flex; align-items: center; gap: .6rem; padding-top: 1.1rem; padding-bottom: 1.1rem; color: #697970; font-size: .85rem; }
