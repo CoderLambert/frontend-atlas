@@ -4,7 +4,7 @@ import questionIndexJson from "@/content/question-index.generated.json";
 import topicIndexJson from "@/content/topic-index.generated.json";
 
 export type ContentLink = { label: string; target: string };
-export type ContentBlock = { kind: "paragraph" | "heading" | "code"; text: string; links?: ContentLink[] };
+export type ContentBlock = { kind: "paragraph" | "heading" | "code"; text: string; language?: string; links?: ContentLink[] };
 export type QuestionSource = { filename?: string; version?: number; sha256?: string; bookmark?: string; interview_year?: number; evidence_level?: string; limitations?: string[]; [key: string]: unknown };
 export type MasterQuestion = {
   qid: string; title: string; primary: string; subtopic: string; tags: string[]; mode: string;

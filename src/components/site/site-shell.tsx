@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, Clock3, Database, FileQuestion, Search, Sparkles, WandSparkles } from "lucide-react";
+import { BookOpen, Clock3, Database, FileQuestion, MessageSquareText, Search, Sparkles, WandSparkles } from "lucide-react";
 import { cn } from "@/lib/cn";
 
 const navigation = [
@@ -14,11 +14,13 @@ const navigation = [
 
 const isLocalCoachEnabled = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
 const localNavigation = isLocalCoachEnabled
-  ? [...navigation, { href: "/coach/", label: "AI答题教练", icon: WandSparkles }]
+  ? [...navigation, { href: "/coach/sessions/", label: "账号会话", icon: MessageSquareText }, { href: "/coach/", label: "AI答题教练", icon: WandSparkles }]
   : [...navigation, { href: "/ai-assist/", label: "AI辅助", icon: WandSparkles }];
 
 function isCurrent(pathname: string, href: string) {
-  return href === "/" ? pathname === "/" : pathname.startsWith(href);
+  if (href === "/") return pathname === "/";
+  if (href === "/coach/") return pathname === "/coach/";
+  return pathname.startsWith(href);
 }
 
 export function SiteShell({ children }: { children: React.ReactNode }) {

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, CheckCircle2, Clock3, Eye, FileQuestion, RotateCcw, Save, WandSparkles } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
@@ -12,12 +13,18 @@ import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { CodeBlock } from "@/components/ui/code-block";
 import { checkpointsFor, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
 import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type SelfRating } from "@/lib/study-store";
 
 type PracticeQuestion = MasterQuestion | CompanyQuestion;
 type SaveState = "loading" | "ready" | "saving" | "saved" | "error";
 type ReviewOption = "none" | "tomorrow" | "3days" | "7days" | "custom";
+type AnswerViewMode = "edit" | "preview" | "split";
+const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
+  loading: () => <p className="markdown-preview-loading" aria-live="polite">正在加载 Markdown 预览…</p>,
+});
+
 const ratingOptions: Array<{ value: SelfRating; label: string }> = [
   { value: "not_yet", label: "还不会" },
   { value: "incomplete", label: "不完整" },
@@ -46,7 +53,7 @@ function RichAnswer({ blocks }: { blocks: ContentBlock[] }) {
   return (
     <div className="rich-answer">
       {blocks.map((block, index) => {
-        if (block.kind === "code") return <pre className="code-block" key={index}><code>{block.text}</code></pre>;
+        if (block.kind === "code") return <CodeBlock code={block.text} language={block.language ?? "typescript"} key={index} />;
         if (block.kind === "heading") return <h3 className="answer-heading" key={index}>{block.text}</h3>;
         return (
           <div className="answer-paragraph" key={index}>
@@ -89,6 +96,7 @@ export function QuestionPractice({
 }) {
   const [attempt, setAttempt] = useState<Attempt | null>(null);
   const [answer, setAnswer] = useState("");
+  const [answerViewSelection, setAnswerViewSelection] = useState<{ qid: string; mode: AnswerViewMode }>(() => ({ qid: question.qid, mode: "edit" }));
   const [revision, setRevision] = useState("");
   const [revealed, setRevealed] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("loading");
@@ -102,12 +110,29 @@ export function QuestionPractice({
   const [storedSnapshot, setStoredSnapshot] = useState(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const answerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const previousAnswerViewMode = useRef<AnswerViewMode>("edit");
+  const previousPreviewQuestionId = useRef(question.qid);
   const checkpoints = checkpointsFor(question);
   const isMaster = "topic_id" in question;
   const sourceLabel = isMaster ? question.primary : question.company;
   const relatedActiveAssessment = currentAssessment(attempt);
   const hasContentUpdate = Boolean(attempt && attempt.contentVersion !== contentVersion);
   const hasAnswer = answer.trim().length > 0;
+  const answerViewMode = answerViewSelection.qid === question.qid ? answerViewSelection.mode : "edit";
+
+  function setAnswerViewMode(mode: AnswerViewMode) {
+    setAnswerViewSelection({ qid: question.qid, mode });
+  }
+
+  useEffect(() => {
+    const questionChanged = previousPreviewQuestionId.current !== question.qid;
+    if (!questionChanged && previousAnswerViewMode.current === "preview" && answerViewMode !== "preview" && !revealed) {
+      answerTextareaRef.current?.focus();
+    }
+    previousAnswerViewMode.current = answerViewMode;
+    previousPreviewQuestionId.current = question.qid;
+  }, [answerViewMode, question.qid, revealed]);
 
   useEffect(() => {
     let active = true;
@@ -319,17 +344,45 @@ export function QuestionPractice({
               <div><h2>我的回答</h2><p>先试着说出关键思路，再查看参考内容。</p></div>
               {revealed && <Badge variant="subtle">参考已揭晓</Badge>}
             </div>
-            <Label className="field-label" htmlFor="answer-draft">写下你的思路，或记录口述提纲</Label>
-            <Textarea
-              id="answer-draft"
-              className="answer-input"
-              value={answer}
-              onChange={(event) => handleAnswerChange(event.target.value)}
-              placeholder="从问题的边界开始，再说明核心机制……"
-              rows={6}
-              disabled={revealed}
-              aria-describedby="answer-hint"
-            />
+            <div className="answer-entry-toolbar">
+              <Label id="answer-content-label" className="field-label" htmlFor={answerViewMode === "preview" ? undefined : "answer-draft"}>
+                {answerViewMode === "preview" ? "作答预览" : "写下你的思路，或记录口述提纲（支持 Markdown）"}
+              </Label>
+              <div className="answer-mode-toggle" role="group" aria-label="作答显示模式">
+                <Button type="button" size="sm" variant={answerViewMode === "edit" ? "secondary" : "ghost"} aria-pressed={answerViewMode === "edit"} aria-controls="answer-editor-content" onClick={() => setAnswerViewMode("edit")}>编辑</Button>
+                <Button type="button" size="sm" variant={answerViewMode === "preview" ? "secondary" : "ghost"} aria-pressed={answerViewMode === "preview"} aria-controls="answer-editor-content" onClick={() => setAnswerViewMode("preview")}>预览</Button>
+                <Button type="button" size="sm" variant={answerViewMode === "split" ? "secondary" : "ghost"} aria-pressed={answerViewMode === "split"} aria-controls="answer-editor-content" onClick={() => setAnswerViewMode("split")}>并排</Button>
+              </div>
+            </div>
+            <p id="answer-format-hint" className="answer-format-hint">预览只切换显示，不会提交作答。</p>
+            <div id="answer-editor-content" className={`answer-editor-content answer-view-${answerViewMode}`}>
+              {answerViewMode !== "preview" && (
+                <section className="answer-editor-panel" aria-label="编辑作答">
+                  {answerViewMode === "split" && <h3 className="answer-panel-title">编辑</h3>}
+                  <Textarea
+                    ref={answerTextareaRef}
+                    id="answer-draft"
+                    className="answer-input"
+                    value={answer}
+                    onChange={(event) => handleAnswerChange(event.target.value)}
+                    placeholder="从问题的边界开始，再说明核心机制……"
+                    rows={12}
+                    disabled={revealed}
+                    aria-describedby="answer-hint answer-format-hint"
+                  />
+                </section>
+              )}
+              {answerViewMode !== "edit" && (
+                <section className="answer-preview-panel" aria-label="Markdown 预览">
+                  {answerViewMode === "split" && <h3 className="answer-panel-title">预览</h3>}
+                  <div id="answer-preview" className="answer-markdown-preview" role="region" aria-labelledby="answer-content-label" tabIndex={0}>
+                    {answer.trim()
+                      ? <CoachMarkdown source={answer} streaming={false} />
+                      : <p className="answer-preview-empty">还没有作答内容。输入后会在这里实时预览 Markdown。</p>}
+                  </div>
+                </section>
+              )}
+            </div>
             <div className="answer-controls">
               <p id="answer-hint" className={saveState === "error" ? "local-save-note is-error" : "local-save-note"}>
                 <Save size={15} aria-hidden="true" /> {saveText}
@@ -444,7 +497,7 @@ export function QuestionPractice({
                   <div className="answer-controls"><p className="local-save-note">{saveText}</p><Button onClick={() => void saveRevision()} disabled={!revision.trim()}>保存补充修订</Button></div>
                 </Card>
               )}
-              {attempt?.revisions.length ? <Card className="revision-history"><h2>补充修订历史</h2>{attempt.revisions.map((item) => <details key={item.revisionId}><summary>{new Date(item.savedAt).toLocaleString()}</summary><p>{item.text}</p></details>)}</Card> : null}
+              {attempt?.revisions.length ? <Card className="revision-history"><h2>补充修订历史</h2>{attempt.revisions.map((item) => <details key={item.revisionId}><summary>{new Date(item.savedAt).toLocaleString()}</summary>{typeof item.text === "string" && item.text.trim() ? <CoachMarkdown source={item.text} streaming={false} /> : <p className="revision-empty">（这条补充修订为空）</p>}</details>)}</Card> : null}
             </>
           )}
         </div>

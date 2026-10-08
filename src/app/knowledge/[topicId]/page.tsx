@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
+import { CodeBlock } from "@/components/ui/code-block";
 import { chapterById, chapterSet, chapters, topicById, topicIndex } from "@/lib/content";
 
 export const dynamicParams = false;
@@ -99,7 +100,7 @@ export default async function KnowledgeChapterPage({ params }: { params: Promise
           <section className="chapter-section" id="example">
             <h2>最小示例</h2>
             {chapter.example.language && <Badge variant="outline">{chapter.example.language}</Badge>}
-            <pre className="code-block chapter-code"><code>{chapter.example.code}</code></pre>
+            <CodeBlock code={chapter.example.code} language={chapter.example.language} />
             <p>{chapter.example.explanation}</p>
             {chapter.example.environment && <p className="source-note">环境：{chapter.example.environment}</p>}
             {chapter.example.verification && <p className="source-note">核验：{chapter.example.verification}</p>}

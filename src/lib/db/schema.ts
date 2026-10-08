@@ -1,0 +1,91 @@
+import { relations, sql } from "drizzle-orm";
+import { check, foreignKey, index, integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { account, session, user, verification } from "./auth-schema.ts";
+
+export { account, session, user, verification };
+
+export type CoachMessageStatus = "pending" | "streaming" | "complete" | "interrupted" | "failed" | "cancelled";
+export type CoachMessageRole = "user" | "assistant";
+export type CoachAssistantRunStatus = CoachMessageStatus;
+
+export const coachConversations = sqliteTable("coach_conversations", {
+  id: text("id").primaryKey(),
+  ownerUserId: text("owner_user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  title: text("title").notNull().default("新对话"),
+  qid: text("qid"),
+  contentVersion: text("content_version"),
+  legacyMetadataJson: text("legacy_metadata_json"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  unique("coach_conversations_owner_id_id_unique").on(table.ownerUserId, table.id),
+  index("coach_conversations_owner_updated_idx").on(table.ownerUserId, table.updatedAt),
+]);
+
+export const coachMessages = sqliteTable("coach_messages", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id").notNull(),
+  ownerUserId: text("owner_user_id").notNull(),
+  clientMessageId: text("client_message_id").notNull(),
+  role: text("role").$type<CoachMessageRole>().notNull(),
+  content: text("content").notNull(),
+  status: text("status").$type<CoachMessageStatus>().notNull().default("complete"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  foreignKey({
+    name: "coach_messages_owner_conversation_fk",
+    columns: [table.ownerUserId, table.conversationId],
+    foreignColumns: [coachConversations.ownerUserId, coachConversations.id],
+  }).onDelete("cascade"),
+  unique("coach_messages_owner_client_id_unique").on(table.ownerUserId, table.clientMessageId),
+  check("coach_messages_role_check", sql`${table.role} in ('user', 'assistant')`),
+  check("coach_messages_status_check", sql`${table.status} in ('pending', 'streaming', 'complete', 'interrupted', 'failed', 'cancelled')`),
+  unique("coach_messages_owner_conversation_id_unique").on(table.ownerUserId, table.conversationId, table.id),
+  index("coach_messages_owner_conversation_created_idx").on(table.ownerUserId, table.conversationId, table.createdAt),
+]);
+
+export const coachAssistantRuns = sqliteTable("coach_assistant_runs", {
+  id: text("id").primaryKey(),
+  ownerUserId: text("owner_user_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  clientRunId: text("client_run_id").notNull(),
+  userMessageId: text("user_message_id").notNull(),
+  assistantMessageId: text("assistant_message_id").notNull(),
+  status: text("status").$type<CoachAssistantRunStatus>().notNull().default("pending"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  foreignKey({
+    name: "coach_assistant_runs_owner_conversation_fk",
+    columns: [table.ownerUserId, table.conversationId],
+    foreignColumns: [coachConversations.ownerUserId, coachConversations.id],
+  }).onDelete("cascade"),
+  foreignKey({
+    name: "coach_assistant_runs_user_message_fk",
+    columns: [table.ownerUserId, table.conversationId, table.userMessageId],
+    foreignColumns: [coachMessages.ownerUserId, coachMessages.conversationId, coachMessages.id],
+  }).onDelete("cascade"),
+  foreignKey({
+    name: "coach_assistant_runs_assistant_message_fk",
+    columns: [table.ownerUserId, table.conversationId, table.assistantMessageId],
+    foreignColumns: [coachMessages.ownerUserId, coachMessages.conversationId, coachMessages.id],
+  }).onDelete("cascade"),
+  unique("coach_assistant_runs_owner_client_id_unique").on(table.ownerUserId, table.clientRunId),
+  index("coach_assistant_runs_owner_conversation_created_idx").on(table.ownerUserId, table.conversationId, table.createdAt),
+  check("coach_assistant_runs_status_check", sql`${table.status} in ('pending', 'streaming', 'complete', 'interrupted', 'failed', 'cancelled')`),
+]);
+
+export const coachConversationsRelations = relations(coachConversations, ({ many, one }) => ({
+  owner: one(user, {
+    fields: [coachConversations.ownerUserId],
+    references: [user.id],
+  }),
+  messages: many(coachMessages),
+}));
+
+export const coachMessagesRelations = relations(coachMessages, ({ one }) => ({
+  conversation: one(coachConversations, {
+    fields: [coachMessages.ownerUserId, coachMessages.conversationId],
+    references: [coachConversations.ownerUserId, coachConversations.id],
+  }),
+}));
