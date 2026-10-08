@@ -196,6 +196,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .answer-markdown-preview:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgb(40 83 71 / 18%); }
 .answer-markdown-preview .coach-markdown { max-width: 72ch; }
 .answer-preview-empty, .markdown-preview-loading { margin: 0; color: #839087; font-size: .88rem; line-height: 1.7; }
+.coach-markdown-copy-error { justify-self: start; margin: .25rem 0 0; border: 1px solid #e8c6bd; border-radius: .55rem; background: #fff8f6; padding: .4rem .6rem; color: #9b4038; font-size: .78rem; line-height: 1.5; }
 .answer-controls { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: .75rem; }
 .local-save-note { margin: 0; color: #718078; font-size: .78rem; }
 .answer-actions { display: flex; align-items: center; gap: .3rem; }
