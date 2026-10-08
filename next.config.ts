@@ -11,6 +11,8 @@ const nextConfig: NextConfig = {
   ...(localAppMode ? {} : { output: "export" as const }),
   pageExtensions: localAppMode ? ["js", "jsx", "ts", "tsx", "node.ts"] : ["js", "jsx", "ts", "tsx"],
   trailingSlash: true,
+  // Keep Better Auth OAuth POST paths exact in the local server runtime.
+  ...(localAppMode ? { skipTrailingSlashRedirect: true } : {}),
   images: { unoptimized: true },
   poweredByHeader: false,
 };
