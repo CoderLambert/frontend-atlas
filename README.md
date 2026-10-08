@@ -22,6 +22,8 @@ npm ci
 npm run dev
 ```
 
+如需启用服务端账号聊天，请按[本地账号会话配置说明](./docs/server-saved-chat-local.md)准备 SQLite 数据库和 OAuth 提供方。
+
 默认开发命令只运行学习站。若要试用本机 AI 答题教练，请使用单独的本地运行配置：
 
 ```sh
