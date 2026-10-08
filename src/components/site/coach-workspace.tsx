@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { getStudySnapshot, saveAttempt, saveDraft, type Attempt } from "@/lib/study-store";
+import { getStudySnapshot, saveAttempt, saveCoachConversation, saveDraft, type Attempt, type CoachConversation, type CoachConversationStatus, type CoachMode } from "@/lib/study-store";
 import { afterPreparation, createRequestLifecycle, discardRequestBuffer, flushRequestBuffer, takeRequestBuffer } from "@/lib/request-epoch.mjs";
 
 const API_ORIGIN = "http://127.0.0.1:4317";
@@ -48,7 +48,18 @@ type SessionStatus = {
 };
 
 type ModelChoice = { slug: string; displayName: string };
-type Mode = "hint" | "explain" | "critique";
+type Mode = CoachMode;
+type ConversationSaveState = "idle" | "saving" | "saved" | "error";
+
+function conversationStatusLabel(status: CoachConversationStatus) {
+  switch (status) {
+    case "pending": return "生成中或未完成";
+    case "complete": return "完整反馈";
+    case "interrupted": return "已中断，保留部分回复";
+    case "failed": return "请求失败";
+    case "cancelled": return "已取消";
+  }
+}
 
 const initialStatus: SessionStatus = { authenticated: false, account: null, profiles: [], pendingRegistrations: [], allowedModelsAvailable: false };
 
@@ -102,9 +113,13 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
   const [connectionIssue, setConnectionIssue] = useState<"wrong-origin" | "unavailable" | null>(null);
   const [models, setModels] = useState<ModelChoice[]>([]);
+  const modelsRef = useRef<ModelChoice[]>([]);
   const [model, setModel] = useState("");
   const [modelsLoading, setModelsLoading] = useState(false);
   const [result, setResult] = useState("");
+  const [conversation, setConversation] = useState<CoachConversation | null>(null);
+  const [conversationSaveState, setConversationSaveState] = useState<ConversationSaveState>("idle");
+  const [conversationSaveMessage, setConversationSaveMessage] = useState("");
   const [preparing, setPreparing] = useState(false);
   const [streaming, setStreaming] = useState(false);
   const [retryAvailable, setRetryAvailable] = useState(false);
@@ -125,6 +140,10 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   const pendingDraftRef = useRef<{ qid: string; text: string } | null>(null);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const flushDraftRef = useRef<() => Promise<void>>(async () => {});
+  const conversationRef = useRef<CoachConversation | null>(null);
+  const activeConversationIdRef = useRef<string | null>(null);
+  const conversationSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushConversationSaveRef = useRef<(record?: CoachConversation) => Promise<boolean>>(async () => true);
 
   const selectedQuestion = useMemo(() => questions.find((question) => question.qid === selectedId) ?? questions[0], [questions, selectedId]);
   const masterQuestionCount = useMemo(() => questions.filter((question) => question.kind === "master").length, [questions]);
@@ -137,6 +156,47 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     return matches.slice(0, 80);
   }, [query, questions]);
 
+  const flushConversationSave = useCallback(async (record?: CoachConversation) => {
+    const target = record ?? conversationRef.current;
+    if (!target) return true;
+    if (conversationSaveTimerRef.current) clearTimeout(conversationSaveTimerRef.current);
+    conversationSaveTimerRef.current = null;
+    if (conversationRef.current?.conversationId === target.conversationId && conversationRef.current.updatedAt === target.updatedAt) {
+      setConversationSaveState("saving");
+      setConversationSaveMessage("AI 对话正在保存在本设备…");
+    }
+    try {
+      await saveCoachConversation(target);
+      if (conversationRef.current?.conversationId === target.conversationId && conversationRef.current.updatedAt === target.updatedAt) {
+        setConversationSaveState("saved");
+        setConversationSaveMessage("AI 对话已保存在本设备。可在“本设备数据”中导出或清除。");
+      }
+      return true;
+    } catch {
+      if (conversationRef.current?.conversationId === target.conversationId && conversationRef.current.updatedAt === target.updatedAt) {
+        setConversationSaveState("error");
+        setConversationSaveMessage("AI 对话保存失败；当前内容仍留在页面内。重试保存不会再次调用模型。");
+      }
+      return false;
+    }
+  }, []);
+  useEffect(() => {
+    flushConversationSaveRef.current = flushConversationSave;
+  }, [flushConversationSave]);
+
+  function updateConversation(record: CoachConversation) {
+    conversationRef.current = record;
+    setConversation(record);
+    setConversationSaveState("saving");
+    setConversationSaveMessage("AI 对话正在保存在本设备…");
+    if (conversationSaveTimerRef.current === null) {
+      conversationSaveTimerRef.current = setTimeout(() => {
+        conversationSaveTimerRef.current = null;
+        void flushConversationSaveRef.current();
+      }, 500);
+    }
+  }
+
   useEffect(() => {
     currentQidRef.current = selectedId;
     let active = true;
@@ -146,11 +206,57 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       setLocalSaveState("loading");
     });
     attemptRef.current = null;
+    conversationRef.current = null;
+    activeConversationIdRef.current = null;
+    lastRequestRef.current = null;
     Promise.resolve().then(getStudySnapshot).then((snapshot) => {
       if (!active) return;
       const latest = snapshot.attempts
         .filter((item) => item.qid === selectedId)
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null;
+      const latestConversation = snapshot.coachConversations
+        .filter((item) => item.qid === selectedId)
+        .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0] ?? null;
+      let visibleConversation = latestConversation;
+      if (visibleConversation?.status === "pending") {
+        const recoveredConversation: CoachConversation = { ...visibleConversation, status: "interrupted", updatedAt: new Date().toISOString() };
+        visibleConversation = recoveredConversation;
+        conversationRef.current = recoveredConversation;
+        setConversation(recoveredConversation);
+        setConversationSaveState("saving");
+        setConversationSaveMessage("上次会话未确认完成，已标记为中断并尝试保存。");
+        void saveCoachConversation(recoveredConversation).then(() => {
+          const current = conversationRef.current;
+          if (current?.conversationId === recoveredConversation.conversationId && current.updatedAt === recoveredConversation.updatedAt) {
+            setConversationSaveState("saved");
+            setConversationSaveMessage("上次会话未确认完成；已保留部分回复。");
+          }
+        }).catch(() => {
+          if (conversationRef.current?.conversationId === recoveredConversation.conversationId) {
+            setConversationSaveState("error");
+            setConversationSaveMessage("上次会话未确认完成，且中断状态保存失败。可以重试保存。");
+          }
+        });
+      } else if (visibleConversation) {
+        conversationRef.current = visibleConversation;
+        setConversation(visibleConversation);
+        setConversationSaveState("saved");
+        setConversationSaveMessage("AI 对话已保存在本设备。可在“本设备数据”中导出或清除。");
+      }
+      if (visibleConversation) {
+        setResult(visibleConversation.assistantOutput);
+        lastRequestRef.current = {
+          questionId: visibleConversation.qid,
+          mode: visibleConversation.mode,
+          model: visibleConversation.model,
+          answer: visibleConversation.userInput,
+        };
+        setRetryAvailable(visibleConversation.contentVersion === contentVersion && (visibleConversation.status === "interrupted" || visibleConversation.status === "failed"));
+        setMode(visibleConversation.mode);
+        if (modelsRef.current.some((item) => item.slug === visibleConversation.model)) setModel(visibleConversation.model);
+      } else {
+        setRetryAvailable(false);
+      }
       if (latest && latest.contentVersion === contentVersion) {
         attemptRef.current = latest;
         const revision = snapshot.drafts.find((item) => item.qid === selectedId && item.attemptId === latest.attemptId && item.kind === "revision");
@@ -158,9 +264,10 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
         setLocalSaveState("saved");
         setLocalSaveMessage("回答草稿已保存在本设备的学习记录中。");
       } else {
-        setAnswer("");
+        const restoredInput = visibleConversation?.contentVersion === contentVersion ? visibleConversation.userInput : "";
+        setAnswer(restoredInput);
         setLocalSaveState("ready");
-        setLocalSaveMessage(latest ? "发现较早版本的练习记录；为避免混用内容版本，本页不会自动载入它。" : "回答草稿会保存在本设备的学习记录中。");
+        setLocalSaveMessage(restoredInput ? "已恢复上次发送的回答；编辑后才会保存为新的练习草稿。" : latest ? "发现较早版本的练习记录；为避免混用内容版本，本页不会自动载入它。" : "回答草稿会保存在本设备的学习记录中。");
       }
     }).catch(() => {
       if (!active) return;
@@ -219,8 +326,21 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   useEffect(() => () => {
     authPollRef.current?.abort();
     const activeRequest = requestLifecycleRef.current.invalidate();
+    const pendingOutput = activeRequest ? takeRequestBuffer(activeRequest) : "";
+    const wasStreaming = activeRequest?.phase === "streaming";
     activeRequest?.controller?.abort();
-    if (activeRequest) discardRequestBuffer(activeRequest);
+    if (activeRequest && pendingOutput) discardRequestBuffer(activeRequest);
+    const activeConversation = conversationRef.current;
+    if (activeConversation && activeConversation.status === "pending") {
+      void saveCoachConversation({
+        ...activeConversation,
+        assistantOutput: activeConversation.assistantOutput + pendingOutput,
+        status: wasStreaming ? "interrupted" : "cancelled",
+        updatedAt: new Date().toISOString(),
+      }).catch(() => {});
+    }
+    if (conversationSaveTimerRef.current) clearTimeout(conversationSaveTimerRef.current);
+    conversationSaveTimerRef.current = null;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     void flushDraftRef.current();
   }, []);
@@ -245,11 +365,8 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       setBackendAvailable(false);
       setConnectionIssue(wrongOrigin ? "wrong-origin" : "unavailable");
       setStatus(initialStatus);
-      if (wrongOrigin || !(cause instanceof Error) || cause.message === "Failed to fetch" || cause.message.includes("本地服务")) {
-        setError("");
-      } else {
-        setError(cause.message);
-      }
+      if (wrongOrigin || !(cause instanceof Error) || cause.message === "Failed to fetch" || cause.message.includes("本地服务")) setError("");
+      else setError(cause.message);
     } finally {
       setStatusLoading(false);
     }
@@ -281,10 +398,16 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     try {
       const data = await requestJson("/api/models");
       const available = Array.isArray(data.models) ? data.models as ModelChoice[] : [];
+      modelsRef.current = available;
       setModels(available);
-      setModel((current) => available.some((item) => item.slug === current) ? current : (available[0]?.slug ?? ""));
+      setModel((current) => {
+        const restoredModel = conversationRef.current?.model;
+        if (restoredModel && available.some((item) => item.slug === restoredModel)) return restoredModel;
+        return available.some((item) => item.slug === current) ? current : (available[0]?.slug ?? "");
+      });
       setError("");
     } catch (cause) {
+      modelsRef.current = [];
       setModels([]);
       setModel("");
       setError(cause instanceof Error ? cause.message : "无法读取模型列表。");
@@ -295,6 +418,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
 
   useEffect(() => {
     queueMicrotask(() => {
+      modelsRef.current = [];
       setModels([]);
       setModel("");
       if (status.authenticated && status.allowedModelsAvailable) void loadModels();
@@ -404,10 +528,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   }
 
   async function logOut() {
-    stopGeneration();
-    setResult("");
-    lastRequestRef.current = null;
-    setRetryAvailable(false);
+    await stopGeneration();
     setLogoutBusy(true);
     setError("");
     setInfo("");
@@ -434,9 +555,31 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     saveTimerRef.current = setTimeout(() => { void flushDraftRef.current(); }, 450);
   }
 
+  function appendConversationOutput(conversationId: string | null, text: string) {
+    if (!text) return;
+    setResult((current) => current + text);
+    const current = conversationRef.current;
+    if (!conversationId || !current || current.conversationId !== conversationId) return;
+    updateConversation({
+      ...current,
+      assistantOutput: current.assistantOutput + text,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   async function selectQuestion(value: string) {
-    stopGeneration();
+    await stopGeneration();
+    const currentConversation = conversationRef.current;
+    if (currentConversation && !(await flushConversationSaveRef.current(currentConversation))) {
+      setError("本段 AI 对话仍未保存在本设备，已留在当前题目中。请先重试保存，再切换题目。");
+      return;
+    }
     await flushDraftRef.current();
+    conversationRef.current = null;
+    activeConversationIdRef.current = null;
+    setConversation(null);
+    setConversationSaveState("idle");
+    setConversationSaveMessage("");
     setSelectedId(value);
     setQuery("");
     setResult("");
@@ -456,24 +599,58 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     await runFeedback(request, false);
   }
 
-  function stopGeneration(message = "已停止生成；部分回复已保留，当前回答草稿仍在输入框中。") {
+  async function stopGeneration(message = "已停止生成；部分回复已保留，当前回答草稿仍在输入框中。") {
     const activeRequest = requestLifecycleRef.current.invalidate();
     if (!activeRequest) return;
     const wasStreaming = activeRequest.phase === "streaming";
     activeRequest.controller?.abort();
     const pending = takeRequestBuffer(activeRequest);
-    if (pending) setResult((current) => current + pending);
+    const conversationId = activeConversationIdRef.current;
+    if (pending) appendConversationOutput(conversationId, pending);
+    const current = conversationRef.current;
+    let finalConversation: CoachConversation | null = null;
+    if (current && current.conversationId === conversationId && current.status === "pending") {
+      finalConversation = {
+        ...current,
+        status: wasStreaming ? "interrupted" : "cancelled",
+        updatedAt: new Date().toISOString(),
+      };
+      updateConversation(finalConversation);
+    }
+    activeConversationIdRef.current = null;
     setPreparing(false);
     setStreaming(false);
-    setRetryAvailable(wasStreaming);
+    setRetryAvailable(wasStreaming && Boolean(finalConversation));
     setInfo(wasStreaming ? message : "已取消待发送的反馈；尚未发出模型请求。");
+    if (finalConversation) await flushConversationSaveRef.current(finalConversation);
   }
 
   async function runFeedback(request: { questionId: string; mode: Mode; model: string; answer: string }, retry: boolean) {
+    if (conversationSaveState === "error" && conversationRef.current) {
+      const saved = await flushConversationSaveRef.current(conversationRef.current);
+      if (!saved) {
+        setError("上次 AI 对话仍未保存在本设备，暂未发送新的模型请求。请先重试保存。");
+        return;
+      }
+    }
     if (!retry) lastRequestRef.current = request;
     const { request: activeRequest, previous } = requestLifecycleRef.current.begin();
     if (previous) {
+      const previousConversationId = activeConversationIdRef.current;
       previous.controller?.abort();
+      const pending = takeRequestBuffer(previous);
+      if (pending) appendConversationOutput(previousConversationId, pending);
+      const previousConversation = conversationRef.current;
+      if (previousConversation && previousConversation.conversationId === previousConversationId && previousConversation.status === "pending") {
+        const interrupted = {
+          ...previousConversation,
+          status: previous.phase === "streaming" ? "interrupted" as const : "cancelled" as const,
+          updatedAt: new Date().toISOString(),
+        };
+        updateConversation(interrupted);
+        void flushConversationSaveRef.current(interrupted);
+      }
+      activeConversationIdRef.current = null;
       discardRequestBuffer(previous);
     }
     followResultRef.current = true;
@@ -485,19 +662,65 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     setStreaming(false);
     setRetryAvailable(false);
     const isCurrent = () => requestLifecycleRef.current.isCurrent(activeRequest);
+    let conversationId: string | null = null;
     const queueResult = (text: string) => {
       if (!isCurrent()) return;
       activeRequest.buffer += text;
       if (activeRequest.timer !== null) return;
       activeRequest.timer = setTimeout(() => {
-        flushRequestBuffer(activeRequest, isCurrent, (next) => setResult((current) => current + next));
+        flushRequestBuffer(activeRequest, isCurrent, (next) => appendConversationOutput(conversationId, next));
       }, 48);
     };
     const flushQueuedResult = () => {
-      flushRequestBuffer(activeRequest, isCurrent, (pending) => setResult((current) => current + pending));
+      flushRequestBuffer(activeRequest, isCurrent, (pending) => appendConversationOutput(conversationId, pending));
+    };
+    const finalizeConversation = async (finalStatus: CoachConversationStatus) => {
+      const current = conversationRef.current;
+      if (!current || current.conversationId !== conversationId) return;
+      const finalRecord = { ...current, status: finalStatus, updatedAt: new Date().toISOString() };
+      updateConversation(finalRecord);
+      requestLifecycleRef.current.finish(activeRequest);
+      if (activeConversationIdRef.current === conversationId) activeConversationIdRef.current = null;
+      setPreparing(false);
+      setStreaming(false);
+      await flushConversationSaveRef.current(finalRecord);
     };
     try {
-      const started = await afterPreparation(activeRequest, isCurrent, () => flushDraftRef.current(), () => {
+      const started = await afterPreparation(activeRequest, isCurrent, async () => {
+        await flushDraftRef.current();
+        if (!isCurrent()) return;
+        const now = new Date().toISOString();
+        const pendingConversation: CoachConversation = {
+          conversationId: crypto.randomUUID(),
+          qid: request.questionId,
+          attemptId: attemptRef.current?.qid === request.questionId && attemptRef.current.contentVersion === contentVersion ? attemptRef.current.attemptId : null,
+          contentVersion,
+          mode: request.mode,
+          model: request.model,
+          userInput: request.answer,
+          assistantOutput: "",
+          status: "pending",
+          startedAt: now,
+          updatedAt: now,
+        };
+        conversationId = pendingConversation.conversationId;
+        activeConversationIdRef.current = conversationId;
+        conversationRef.current = pendingConversation;
+        setConversation(pendingConversation);
+        setConversationSaveState("saving");
+        setConversationSaveMessage("正在先保存本次发送内容，再发起模型请求…");
+        try {
+          await saveCoachConversation(pendingConversation);
+        } catch {
+          setConversationSaveState("error");
+          setConversationSaveMessage("本次发送内容无法保存在本设备，因此没有发起模型请求。可以重试保存后再发送。");
+          throw new Error("无法保存本次 AI 对话；模型请求尚未发送。");
+        }
+        if (conversationRef.current?.conversationId === pendingConversation.conversationId) {
+          setConversationSaveState("saved");
+          setConversationSaveMessage("本次发送内容已先保存在本设备。");
+        }
+      }, () => {
         activeRequest.controller = new AbortController();
         activeRequest.phase = "streaming";
         setPreparing(false);
@@ -565,7 +788,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       }
       buffer += decoder.decode();
       if (buffer.trim()) processEvent(buffer);
-      await reader.cancel();
+      await reader.cancel().catch(() => {});
       if (!isCurrent()) {
         reader.releaseLock();
         return;
@@ -576,22 +799,38 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       if (streamError) {
         setError(streamError);
         setRetryAvailable(true);
+        const current = conversationRef.current;
+        await finalizeConversation(current?.assistantOutput ? "interrupted" : "failed");
       } else if (completed) {
         setInfo("反馈已完整生成。模型意见只是练习建议，不是招聘结论或权威评分。");
         setRetryAvailable(false);
+        await finalizeConversation("complete");
       } else {
         setError("响应没有确认完整结束；请检查后再决定是否重新发送。");
         setRetryAvailable(true);
+        const current = conversationRef.current;
+        await finalizeConversation(current?.assistantOutput ? "interrupted" : "failed");
       }
     } catch (cause) {
       if (!isCurrent()) return;
       flushQueuedResult();
-      if (activeRequest.controller?.signal.aborted) setInfo("已停止生成；这次反馈未确认完整结束。");
-      else setError(cause instanceof Error ? cause.message : "模型请求没有完成。没有切换到其他计费方式。");
-      setRetryAvailable(true);
+      const current = conversationRef.current;
+      const requestWasSent = activeRequest.phase === "streaming";
+      const finalStatus: CoachConversationStatus = requestWasSent
+        ? current?.assistantOutput ? "interrupted" : "failed"
+        : "failed";
+      if (!requestWasSent) {
+        setError(cause instanceof Error ? cause.message : "本次 AI 对话无法保存，因此没有发送模型请求。");
+        setRetryAvailable(false);
+      } else {
+        setError(cause instanceof Error ? cause.message : "模型请求没有完成。没有切换到其他计费方式。");
+        setRetryAvailable(true);
+      }
+      await finalizeConversation(finalStatus);
     } finally {
       if (isCurrent()) {
         requestLifecycleRef.current.finish(activeRequest);
+        if (activeConversationIdRef.current === conversationId) activeConversationIdRef.current = null;
         setPreparing(false);
         setStreaming(false);
       }
@@ -602,6 +841,11 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     const previous = lastRequestRef.current;
     if (!previous || !status.authenticated || !status.allowedModelsAvailable) return;
     void runFeedback(previous, true);
+  }
+
+  function retryConversationSave() {
+    const current = conversationRef.current;
+    if (current) void flushConversationSaveRef.current(current);
   }
 
   function returnResultToLatest() {
@@ -827,7 +1071,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
                   </div>
                 </div>
                 <div className="coach-submit-row">
-                  <div className="coach-privacy-copy">发送后，本题、参考内容和你的回答会发往 OpenAI Responses API 生成反馈。请求使用 store:false；本地页面不保存 AI 对话。</div>
+                  <div className="coach-privacy-copy">发送后，本题、参考内容和你的回答会发往 OpenAI Responses API。请求使用 store:false；本次输入与反馈会保存在本机 IndexedDB，可在“本设备数据”中导出或清除。</div>
                   {streaming || preparing ? (
                     <Button type="button" variant="outline" onClick={() => stopGeneration()}><Square size={15} aria-hidden="true" />{preparing ? "取消等待" : "停止生成"}</Button>
                   ) : (
@@ -850,6 +1094,23 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
               <CardContent>
                 {error && <ErrorNote>{error}</ErrorNote>}
                 {info && <p className="coach-note coach-note-info" role="status"><CheckCircle2 size={16} aria-hidden="true" />{info}</p>}
+                {conversation && (
+                  <div className="coach-conversation-meta" aria-label="本题最近一次 AI 对话">
+                    <div className="coach-conversation-meta-heading">
+                      <Badge variant={conversation.status === "complete" ? "secondary" : "outline"}>{conversationStatusLabel(conversation.status)}</Badge>
+                      <span>{conversation.mode} · {conversation.model}</span>
+                    </div>
+                    <p className={conversationSaveState === "error" ? "coach-note coach-note-error" : "coach-note"} role={conversationSaveState === "error" ? "alert" : "status"}>
+                      {conversationSaveMessage || "AI 对话保存在本设备。"}
+                    </p>
+                    {conversation.contentVersion !== contentVersion && <p className="coach-note">这段对话来自较早的题库版本，只作为历史记录显示，不会替换当前回答。</p>}
+                    <details className="coach-conversation-input">
+                      <summary>查看本次发送内容</summary>
+                      <pre>{conversation.userInput || "（本次没有发送回答文本）"}</pre>
+                    </details>
+                    {conversationSaveState === "error" && <Button type="button" variant="outline" size="sm" onClick={retryConversationSave}><RotateCw size={14} aria-hidden="true" />重试保存对话</Button>}
+                  </div>
+                )}
                 {modelsLoading && <p className="coach-note"><LoaderCircle size={15} className="animate-spin" aria-hidden="true" />正在读取账号可用模型。</p>}
                 {!modelsLoading && models.length === 0 && <Button type="button" variant="outline" size="sm" onClick={() => void loadModels()} disabled={!status.allowedModelsAvailable}><RotateCw size={14} aria-hidden="true" />刷新模型列表</Button>}
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">{preparing ? "正在保存本机回答草稿。" : streaming ? "正在接收教练回复。" : ""}</p>
@@ -878,7 +1139,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
                 <p><strong>建议，不打分。</strong>模型不会给数字分数，也不能替代你在原题页的自评。</p>
                 <p><strong>只在本机提供服务。</strong>OAuth 回调、会话和模型请求由本地 Node 服务处理；静态网站不会携带登录凭据。</p>
                 <p><strong>没有自动回退。</strong>如果账号无权限或用量不可用，页面会提示原因，不切换 API Key 计费。</p>
-                <p><strong>草稿留在设备上。</strong>练习回答保存在本机 IndexedDB；点击发送时才把当前问题与回答发给 OpenAI。</p>
+                <p><strong>记录留在设备上。</strong>练习草稿、发送内容和 AI 反馈保存在本机 IndexedDB；请求使用 store:false，不会同步到账号或其他设备。</p>
                 <Link href="/ai-assist/">查看本机设置步骤与功能状态 <ArrowUpRight size={14} aria-hidden="true" /></Link>
               </CardContent>
             </Card>

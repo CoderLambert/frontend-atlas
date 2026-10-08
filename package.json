@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "test:coach": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/coach-experience.test.mjs",
     "test:backup": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-backup-validation.mjs",
+    "test:study-store": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-study-store.mjs",
     "test:siwc": "node --test server/*.test.mjs scripts/*.test.mjs",
     "verify:static-boundary": "node scripts/test-static-boundary.mjs"
   },

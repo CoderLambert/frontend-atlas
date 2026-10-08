@@ -31,22 +31,40 @@ export type Draft = {
   savedAt: string;
 };
 export type Preferences = { key: string; value: unknown; updatedAt: string };
-export type StudySnapshot = { attempts: Attempt[]; drafts: Draft[]; preferences: Preferences[] };
+export type CoachMode = "hint" | "explain" | "critique";
+export type CoachConversationStatus = "pending" | "complete" | "interrupted" | "failed" | "cancelled";
+export type CoachConversation = {
+  conversationId: string;
+  qid: string;
+  attemptId: string | null;
+  contentVersion: string;
+  mode: CoachMode;
+  model: string;
+  userInput: string;
+  assistantOutput: string;
+  status: CoachConversationStatus;
+  startedAt: string;
+  updatedAt: string;
+};
+export type StudySnapshot = { attempts: Attempt[]; drafts: Draft[]; preferences: Preferences[]; coachConversations: CoachConversation[] };
 export type BackupFile = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   exportedAt: string;
   contentSetVersion: string;
   attempts: Attempt[];
   drafts: Draft[];
   preferences: Preferences[];
+  coachConversations: CoachConversation[];
 };
 
 const DATABASE_NAME = "zhixu-study";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const ATTEMPTS = "attempts";
 const DRAFTS = "drafts";
 const PREFERENCES = "preferences";
+const COACH_CONVERSATIONS = "coachConversations";
 let databasePromise: Promise<IDBDatabase> | null = null;
+const conversationWrites = new Map<string, Promise<void>>();
 
 function openDatabase(): Promise<IDBDatabase> {
   if (typeof window === "undefined" || !window.indexedDB) {
@@ -61,6 +79,7 @@ function openDatabase(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains(ATTEMPTS)) db.createObjectStore(ATTEMPTS, { keyPath: "attemptId" });
       if (!db.objectStoreNames.contains(DRAFTS)) db.createObjectStore(DRAFTS, { keyPath: "qid" });
       if (!db.objectStoreNames.contains(PREFERENCES)) db.createObjectStore(PREFERENCES, { keyPath: "key" });
+      if (!db.objectStoreNames.contains(COACH_CONVERSATIONS)) db.createObjectStore(COACH_CONVERSATIONS, { keyPath: "conversationId" });
     };
     request.onerror = () => {
       databasePromise = null;
@@ -112,23 +131,40 @@ function transact<T>(
 }
 
 export function getStudySnapshot(): Promise<StudySnapshot> {
-  return transact([ATTEMPTS, DRAFTS, PREFERENCES], "readonly", (tx, setResult, fail) => {
+  return transact([ATTEMPTS, DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readonly", (tx, setResult, fail) => {
     const attemptsRequest = tx.objectStore(ATTEMPTS).getAll();
     const draftsRequest = tx.objectStore(DRAFTS).getAll();
     const preferencesRequest = tx.objectStore(PREFERENCES).getAll();
+    const coachConversationsRequest = tx.objectStore(COACH_CONVERSATIONS).getAll();
     let attempts: Attempt[] | undefined;
     let drafts: Draft[] | undefined;
     let preferences: Preferences[] | undefined;
+    let coachConversations: CoachConversation[] | undefined;
     const finish = () => {
-      if (attempts && drafts && preferences) setResult({ attempts, drafts, preferences });
+      if (attempts && drafts && preferences && coachConversations) setResult({ attempts, drafts, preferences, coachConversations });
     };
     attemptsRequest.onsuccess = () => { attempts = attemptsRequest.result as Attempt[]; finish(); };
     draftsRequest.onsuccess = () => { drafts = draftsRequest.result as Draft[]; finish(); };
     preferencesRequest.onsuccess = () => { preferences = preferencesRequest.result as Preferences[]; finish(); };
-    for (const request of [attemptsRequest, draftsRequest, preferencesRequest]) {
+    coachConversationsRequest.onsuccess = () => { coachConversations = coachConversationsRequest.result as CoachConversation[]; finish(); };
+    for (const request of [attemptsRequest, draftsRequest, preferencesRequest, coachConversationsRequest]) {
       request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("无法读取本设备学习记录。"));
     }
   });
+}
+
+export function saveCoachConversation(conversation: CoachConversation): Promise<void> {
+  const previous = conversationWrites.get(conversation.conversationId) ?? Promise.resolve();
+  const write: Promise<void> = previous.catch(() => {}).then(() => transact<void>([COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
+    const request = tx.objectStore(COACH_CONVERSATIONS).put(conversation);
+    request.onsuccess = () => setResult(undefined);
+    request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("AI 对话未能保存到本设备。"));
+  }));
+  const tracked = write.finally(() => {
+    if (conversationWrites.get(conversation.conversationId) === tracked) conversationWrites.delete(conversation.conversationId);
+  });
+  conversationWrites.set(conversation.conversationId, tracked);
+  return tracked;
 }
 
 export function saveAttempt(attempt: Attempt): Promise<void> {
@@ -165,26 +201,29 @@ export function savePreference(preference: Preferences): Promise<void> {
 
 export function backupFromSnapshot(snapshot: StudySnapshot, contentSetVersion: string): BackupFile {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     exportedAt: new Date().toISOString(),
     contentSetVersion,
     attempts: snapshot.attempts,
     drafts: snapshot.drafts,
     preferences: snapshot.preferences,
+    coachConversations: snapshot.coachConversations,
   };
 }
 
 export function replaceAllStudyData(backup: BackupFile): Promise<void> {
-  return transact([ATTEMPTS, DRAFTS, PREFERENCES], "readwrite", (tx, setResult, fail) => {
+  return transact([ATTEMPTS, DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
     const attemptsStore = tx.objectStore(ATTEMPTS);
     const draftsStore = tx.objectStore(DRAFTS);
     const preferencesStore = tx.objectStore(PREFERENCES);
-    for (const request of [attemptsStore.clear(), draftsStore.clear(), preferencesStore.clear()]) {
+    const conversationsStore = tx.objectStore(COACH_CONVERSATIONS);
+    for (const request of [attemptsStore.clear(), draftsStore.clear(), preferencesStore.clear(), conversationsStore.clear()]) {
       request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("清理现有数据失败。"));
     }
     for (const record of backup.attempts) attemptsStore.put(record);
     for (const record of backup.drafts) draftsStore.put(record);
     for (const record of backup.preferences) preferencesStore.put(record);
+    for (const record of backup.coachConversations) conversationsStore.put(record);
     setResult(undefined);
   });
 }
@@ -194,20 +233,24 @@ export function mergeStudyData(
   replaceConflictingAttemptIds: Set<string>,
   replaceConflictingDraftQids: Set<string>,
   replaceConflictingPreferenceKeys: Set<string>,
+  replaceConflictingConversationIds: Set<string>,
 ): Promise<void> {
-  return transact([ATTEMPTS, DRAFTS, PREFERENCES], "readwrite", (tx, setResult, fail) => {
+  return transact([ATTEMPTS, DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
     const attemptsStore = tx.objectStore(ATTEMPTS);
     const draftsStore = tx.objectStore(DRAFTS);
     const preferencesStore = tx.objectStore(PREFERENCES);
+    const conversationsStore = tx.objectStore(COACH_CONVERSATIONS);
     const existingAttemptsRequest = attemptsStore.getAll();
     const existingDraftsRequest = draftsStore.getAll();
     const existingPreferencesRequest = preferencesStore.getAll();
+    const existingConversationsRequest = conversationsStore.getAll();
     let completed = 0;
     let existingAttempts: Attempt[] = [];
     let existingDrafts: Draft[] = [];
     let existingPreferences: Preferences[] = [];
+    let existingConversations: CoachConversation[] = [];
     const apply = () => {
-      if (++completed !== 3) return;
+      if (++completed !== 4) return;
       const existingAttemptIds = new Set(existingAttempts.map((item) => item.attemptId));
       for (const attempt of backup.attempts) {
         if (!existingAttemptIds.has(attempt.attemptId) || replaceConflictingAttemptIds.has(attempt.attemptId)) attemptsStore.put(attempt);
@@ -216,20 +259,25 @@ export function mergeStudyData(
       for (const draft of backup.drafts) if (!existingDraftIds.has(draft.qid) || replaceConflictingDraftQids.has(draft.qid)) draftsStore.put(draft);
       const existingPreferenceIds = new Set(existingPreferences.map((item) => item.key));
       for (const preference of backup.preferences) if (!existingPreferenceIds.has(preference.key) || replaceConflictingPreferenceKeys.has(preference.key)) preferencesStore.put(preference);
+      const existingConversationIds = new Set(existingConversations.map((item) => item.conversationId));
+      for (const conversation of backup.coachConversations) {
+        if (!existingConversationIds.has(conversation.conversationId) || replaceConflictingConversationIds.has(conversation.conversationId)) conversationsStore.put(conversation);
+      }
       setResult(undefined);
     };
     existingAttemptsRequest.onsuccess = () => { existingAttempts = existingAttemptsRequest.result as Attempt[]; apply(); };
     existingDraftsRequest.onsuccess = () => { existingDrafts = existingDraftsRequest.result as Draft[]; apply(); };
     existingPreferencesRequest.onsuccess = () => { existingPreferences = existingPreferencesRequest.result as Preferences[]; apply(); };
-    for (const request of [existingAttemptsRequest, existingDraftsRequest, existingPreferencesRequest]) {
+    existingConversationsRequest.onsuccess = () => { existingConversations = existingConversationsRequest.result as CoachConversation[]; apply(); };
+    for (const request of [existingAttemptsRequest, existingDraftsRequest, existingPreferencesRequest, existingConversationsRequest]) {
       request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("无法校验本设备已有数据。"));
     }
   });
 }
 
 export function clearAllStudyData(): Promise<void> {
-  return transact([ATTEMPTS, DRAFTS, PREFERENCES], "readwrite", (tx, setResult, fail) => {
-    const requests = [tx.objectStore(ATTEMPTS).clear(), tx.objectStore(DRAFTS).clear(), tx.objectStore(PREFERENCES).clear()];
+  return transact([ATTEMPTS, DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
+    const requests = [tx.objectStore(ATTEMPTS).clear(), tx.objectStore(DRAFTS).clear(), tx.objectStore(PREFERENCES).clear(), tx.objectStore(COACH_CONVERSATIONS).clear()];
     for (const request of requests) request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("清除本设备数据失败。"));
     setResult(undefined);
   });
