@@ -52,6 +52,7 @@ class EventQueue<T> implements AsyncIterable<T> {
 type ActiveRun = {
   ownerUserId: string;
   conversationId: string;
+  providerBindingVersion: number | null;
   controller: AbortController;
   channel: EventQueue<AssistantRunEvent>;
   abortStatus: AbortStatus | null;
@@ -104,6 +105,7 @@ export class AssistantRunManager {
     ownerUserId: string;
     conversationId: string;
     userContent: string;
+    messages?: Array<{ role: "user" | "assistant"; content: string }>;
     userMessage: unknown;
     assistantMessage: unknown;
     provider: AssistantProvider;
@@ -113,6 +115,7 @@ export class AssistantRunManager {
     const activeRun: ActiveRun = {
       ownerUserId: input.ownerUserId,
       conversationId: input.conversationId,
+      providerBindingVersion: input.provider.bindingVersion,
       controller,
       channel,
       abortStatus: null,
@@ -145,12 +148,20 @@ export class AssistantRunManager {
     return activeRun.completion;
   }
 
+  async abortBinding(ownerUserId: string, bindingVersion: number): Promise<number> {
+    const activeRuns = [...this.active.entries()].filter(([, run]) =>
+      run.ownerUserId === ownerUserId && run.providerBindingVersion === bindingVersion);
+    await Promise.all(activeRuns.map(([runId]) => this.abort(runId, ownerUserId, "cancelled")));
+    return activeRuns.length;
+  }
+
   private async execute(
     input: {
       runId: string;
       ownerUserId: string;
       conversationId: string;
       userContent: string;
+      messages?: Array<{ role: "user" | "assistant"; content: string }>;
       provider: AssistantProvider;
     },
     activeRun: ActiveRun,
@@ -184,7 +195,12 @@ export class AssistantRunManager {
 
     try {
       if (!this.service.beginAssistantRun(input.runId)) throw new Error("Run is no longer active.");
-      iterator = input.provider.stream({ content: input.userContent, signal: activeRun.controller.signal })[Symbol.asyncIterator]();
+      iterator = input.provider.stream({
+        content: input.userContent,
+        messages: input.messages ?? [{ role: "user", content: input.userContent }],
+        model: input.provider.model,
+        signal: activeRun.controller.signal,
+      })[Symbol.asyncIterator]();
       let next = observeIteratorNext(iterator);
       let totalLength = 0;
       let lastPersistAt = Date.now();

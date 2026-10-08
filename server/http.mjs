@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { spawn } from "node:child_process";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { createSiwcRuntime, readBoundedJson, SiwcError } from "./siwc.mjs";
 import { createCredentialStore } from "./storage.mjs";
 
@@ -16,6 +17,7 @@ const SESSION_COOKIE = "atlas_siwc_session";
 const SESSION_MAX_AGE = 12 * 60 * 60;
 const MAX_JSON_BYTES = 32 * 1024;
 const MAX_OUTPUT_CHARS = 48_000;
+const SERVICE_TOKEN_HEADER = "x-frontend-atlas-service-token";
 
 function safeHeaders(res) {
   res.setHeader("cache-control", "no-store, max-age=0");
@@ -75,6 +77,19 @@ function assertLocalHost(req, expectedHost = LOCAL_SERVER.hostHeader) {
   const isLoopback = remote === "127.0.0.1" || remote === "::1" || remote === "::ffff:127.0.0.1";
   if (!isLoopback || req.headers.host !== expectedHost) {
     throw new SiwcError("local_host_required", "本地服务拒绝了非本机请求。", 403);
+  }
+}
+
+function assertServiceRequest(req, serviceToken) {
+  if (typeof serviceToken !== "string" || serviceToken.length < 32) {
+    throw new SiwcError("service_auth_unavailable", "本机服务间鉴权尚未配置。", 503);
+  }
+  const supplied = req.headers[SERVICE_TOKEN_HEADER];
+  const value = Array.isArray(supplied) ? "" : supplied ?? "";
+  const expectedDigest = createHash("sha256").update(serviceToken).digest();
+  const suppliedDigest = createHash("sha256").update(value).digest();
+  if (!timingSafeEqual(expectedDigest, suppliedDigest)) {
+    throw new SiwcError("service_auth_required", "本机服务拒绝了未授权的内部请求。", 403);
   }
 }
 
@@ -237,6 +252,7 @@ export function createLocalHttpServer({
   openBrowser = openSystemBrowser,
   uiOrigin = LOCAL_SERVER.uiOrigin,
   hostHeader = LOCAL_SERVER.hostHeader,
+  serviceToken = null,
 } = {}) {
   const server = createServer(async (req, res) => {
     safeHeaders(res);
@@ -251,7 +267,7 @@ export function createLocalHttpServer({
         safeHeaders(res);
         try {
           const result = await runtime.finishAuth(requestUrl);
-          const sessionId = runtime.createSession(result.clientId);
+          const sessionId = runtime.createSession(result.clientId, requestSessionId(req));
           runtime.completeAuthFlow(result.flowId, { clientId: result.clientId, sessionId });
           res.statusCode = 303;
           res.setHeader("location", `${uiOrigin}/coach?signin=connected`);
@@ -278,6 +294,25 @@ export function createLocalHttpServer({
       if (req.method === "GET" && requestUrl.pathname === "/api/session") {
         const sessionId = requestSessionId(req);
         sendJson(req, res, 200, await runtime.status(sessionId));
+        return;
+      }
+      if (req.method === "GET" && requestUrl.pathname === "/api/provider/session") {
+        assertServiceRequest(req, serviceToken);
+        const sessionId = requestSessionId(req);
+        sendJson(req, res, 200, await runtime.sessionProfile(sessionId));
+        return;
+      }
+      if (req.method === "POST" && requestUrl.pathname === "/api/provider/select") {
+        assertServiceRequest(req, serviceToken);
+        const body = await readJson(req, 4 * 1024);
+        if (typeof body.clientId !== "string" || !body.clientId || body.clientId.length > 256) {
+          throw new SiwcError("profile_required", "已授权的本机账号无效。", 400);
+        }
+        const sessionId = await runtime.selectProfile(body.clientId, requestSessionId(req));
+        safeHeaders(res);
+        res.statusCode = 204;
+        res.setHeader("set-cookie", cookieHeader(SESSION_COOKIE, sessionId, SESSION_MAX_AGE));
+        res.end();
         return;
       }
       if (req.method === "POST" && requestUrl.pathname === "/api/auth/start") {
@@ -320,7 +355,7 @@ export function createLocalHttpServer({
       if (req.method === "POST" && requestUrl.pathname === "/api/auth/select") {
         const body = await readJson(req, 4 * 1024);
         if (typeof body.clientId !== "string") throw new SiwcError("profile_required", "请选择一个已保存的账号。", 400);
-        const sessionId = await runtime.selectProfile(body.clientId);
+        const sessionId = await runtime.selectProfile(body.clientId, requestSessionId(req));
         safeHeaders(res);
         res.statusCode = 200;
         res.setHeader("content-type", "application/json; charset=utf-8");
@@ -339,6 +374,12 @@ export function createLocalHttpServer({
         return;
       }
       if (req.method === "GET" && requestUrl.pathname === "/api/models") {
+        const sessionId = requestSessionId(req);
+        sendJson(req, res, 200, { models: await runtime.listModels(sessionId) });
+        return;
+      }
+      if (req.method === "GET" && requestUrl.pathname === "/api/provider/models") {
+        assertServiceRequest(req, serviceToken);
         const sessionId = requestSessionId(req);
         sendJson(req, res, 200, { models: await runtime.listModels(sessionId) });
         return;
@@ -376,6 +417,41 @@ export function createLocalHttpServer({
           await relayResponseStream(upstream, res, controller);
         } finally {
           runtime.completeFeedbackResponse?.(upstream);
+        }
+        return;
+      }
+      if (req.method === "POST" && requestUrl.pathname === "/api/assistant/chat") {
+        assertServiceRequest(req, serviceToken);
+        const sessionId = requestSessionId(req);
+        const input = await readJson(req, 128 * 1024);
+        const controller = new AbortController();
+        req.once("aborted", () => { controller.abort(); });
+        res.once("close", () => {
+          if (!res.writableEnded) controller.abort();
+        });
+        const upstream = await runtime.openAssistantResponse(sessionId, input, controller.signal);
+        try {
+          if (!upstream.ok) {
+            const data = await (async () => {
+              try { return await readBoundedJson(upstream, 64 * 1024); }
+              catch { return {}; }
+            })();
+            const code = data?.error?.code ?? data?.error ?? data?.detail ?? "provider_error";
+            const requestId = upstream.headers.get("openai-request-id") ?? upstream.headers.get("x-request-id") ?? null;
+            if (upstream.status === 401) {
+              sendJson(req, res, 401, { error: "reauthentication_required", message: "ChatGPT 登录状态已失效，请重新连接账号。", requestId });
+            } else {
+              sendJson(req, res, upstream.status >= 500 ? 503 : upstream.status, {
+                error: String(code).slice(0, 120),
+                message: mapProviderError(String(code)),
+                requestId,
+              });
+            }
+            return;
+          }
+          await relayResponseStream(upstream, res, controller);
+        } finally {
+          runtime.completeAssistantResponse?.(upstream);
         }
         return;
       }

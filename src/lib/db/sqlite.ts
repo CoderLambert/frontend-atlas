@@ -6,7 +6,7 @@ import * as schema from "./schema.ts";
 
 export function openSqliteDatabase(path: string) {
   if (path !== ":memory:") {
-    const resolvedPath = isAbsolute(path) ? path : resolve(process.cwd(), path);
+    const resolvedPath = isAbsolute(path) ? path : resolve(/* turbopackIgnore: true */ process.cwd(), path);
     mkdirSync(dirname(resolvedPath), { recursive: true });
     path = resolvedPath;
   }

@@ -61,17 +61,47 @@ export class ConversationService {
     });
   }
 
-  createAssistantRun(ownerUserId: string, conversationId: string, input: { clientRunId?: unknown; content?: unknown }) {
+  createAssistantRun(ownerUserId: string, conversationId: string, input: {
+    clientRunId?: unknown;
+    content?: unknown;
+    providerModel?: unknown;
+    providerBindingVersion?: unknown;
+  }) {
     if (typeof input.clientRunId !== "string" || !input.clientRunId.trim() || input.clientRunId.length > 128) {
       return { kind: "invalid" as const };
     }
     if (typeof input.content !== "string" || !input.content.trim() || input.content.length > 500_000) {
       return { kind: "invalid" as const };
     }
+    const providerModel = typeof input.providerModel === "string" ? input.providerModel : null;
+    const providerBindingVersion = typeof input.providerBindingVersion === "number" ? input.providerBindingVersion : null;
+    if ((providerModel !== null && (!providerModel.trim() || providerModel.length > 160))
+      || (providerBindingVersion !== null && (!Number.isSafeInteger(providerBindingVersion) || providerBindingVersion < 1))
+      || ((providerModel === null) !== (providerBindingVersion === null))) {
+      return { kind: "invalid" as const };
+    }
     return this.repository.createAssistantRun(ownerUserId, conversationId, {
       clientRunId: input.clientRunId,
       content: input.content,
+      providerModel,
+      providerBindingVersion,
     });
+  }
+
+  findAssistantRunByClientId(ownerUserId: string, conversationId: string, input: {
+    clientRunId?: unknown;
+    content?: unknown;
+  }) {
+    if (typeof input.clientRunId !== "string" || !input.clientRunId.trim() || input.clientRunId.length > 128
+      || typeof input.content !== "string" || !input.content.trim() || input.content.length > 500_000) {
+      return { kind: "invalid" as const };
+    }
+    const existing = this.repository.findAssistantRunByClientId(ownerUserId, input.clientRunId);
+    if (!existing) return { kind: "missing" as const };
+    if (existing.run.conversationId !== conversationId || existing.userMessage.content !== input.content) {
+      return { kind: "conflict" as const };
+    }
+    return { kind: "existing" as const, ...existing };
   }
 
   getAssistantRun(ownerUserId: string, conversationId: string, runId: string) {

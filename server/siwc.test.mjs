@@ -437,7 +437,21 @@ test("loopback API enforces exact Host/Origin and the streamed result only succe
   const connected = await connectFixture(fixture);
   await fixture.runtime.listModels(connected.sessionId);
   const port = await reserveLoopbackPort();
-  const server = createLocalHttpServer({ runtime: fixture.runtime, openBrowser: async () => true, hostHeader: `127.0.0.1:${port}` });
+  const serviceToken = "service-token-for-tests-only-000000000000";
+  let providerSelectCalls = 0;
+  const serverRuntime = {
+    ...fixture.runtime,
+    async selectProfile(...args) {
+      providerSelectCalls += 1;
+      return fixture.runtime.selectProfile(...args);
+    },
+  };
+  const server = createLocalHttpServer({
+    runtime: serverRuntime,
+    openBrowser: async () => true,
+    hostHeader: `127.0.0.1:${port}`,
+    serviceToken,
+  });
   t.after(() => new Promise((resolve) => server.close(resolve)));
   await new Promise((resolve, reject) => server.once("error", reject).listen(port, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${port}`;
@@ -460,6 +474,60 @@ test("loopback API enforces exact Host/Origin and the streamed result only succe
   assert.equal(badOrigin.headers.get("access-control-allow-origin"), null);
 
   const session = await fixture.runtime.createSession(connected.profile.clientId);
+  const unauthorizedSelect = await fetch(`${base}/api/provider/select`, {
+    method: "POST",
+    headers: {
+      host: `127.0.0.1:${port}`,
+      origin: LOCAL_SERVER.uiOrigin,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ clientId: connected.profile.clientId }),
+  });
+  assert.equal(unauthorizedSelect.status, 403);
+  assert.equal(providerSelectCalls, 0, "an unauthorized profile resume does not touch stored profiles");
+  const authorizedSelect = await fetch(`${base}/api/provider/select`, {
+    method: "POST",
+    headers: {
+      host: `127.0.0.1:${port}`,
+      origin: LOCAL_SERVER.uiOrigin,
+      "content-type": "application/json",
+      "x-frontend-atlas-service-token": serviceToken,
+    },
+    body: JSON.stringify({ clientId: connected.profile.clientId }),
+  });
+  assert.equal(authorizedSelect.status, 204);
+  assert.equal(providerSelectCalls, 1);
+  assert.match(authorizedSelect.headers.get("set-cookie") ?? "", /^atlas_siwc_session=/u);
+  const providerCallsBeforeUnauthorizedRequest = fixture.mock.calls.filter((call) => call.url === SIWC.responsesUrl).length;
+  const unauthorizedAssistant = await fetch(`${base}/api/assistant/chat`, {
+    method: "POST",
+    headers: {
+      host: `127.0.0.1:${port}`,
+      origin: LOCAL_SERVER.uiOrigin,
+      "content-type": "application/json",
+      cookie: `atlas_siwc_session=${session}`,
+    },
+    body: JSON.stringify({ model: "model-a", messages: [{ role: "user", content: "must not reach provider" }] }),
+  });
+  assert.equal(unauthorizedAssistant.status, 403, "a browser-origin request without the service credential cannot invoke ChatGPT");
+  assert.equal(
+    fixture.mock.calls.filter((call) => call.url === SIWC.responsesUrl).length,
+    providerCallsBeforeUnauthorizedRequest,
+    "a rejected internal request performs zero upstream model calls",
+  );
+  const authorizedSession = await fetch(`${base}/api/provider/session`, {
+    headers: {
+      host: `127.0.0.1:${port}`,
+      origin: LOCAL_SERVER.uiOrigin,
+      cookie: `atlas_siwc_session=${session}`,
+      "x-frontend-atlas-service-token": serviceToken,
+    },
+  });
+  assert.equal(authorizedSession.status, 200);
+  const authorizedSessionBody = await authorizedSession.json();
+  assert.equal(authorizedSessionBody.account.clientId, connected.profile.clientId);
+  assert.equal("profiles" in authorizedSessionBody, false, "the server-to-server status never returns the local profile list");
+
   const response = await fetch(`${base}/api/coaching`, {
     method: "POST",
     headers: {

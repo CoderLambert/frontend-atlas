@@ -99,7 +99,12 @@ export class ConversationRepository {
     });
   }
 
-  createAssistantRun(ownerUserId: string, conversationId: string, input: { clientRunId: string; content: string }) {
+  createAssistantRun(ownerUserId: string, conversationId: string, input: {
+    clientRunId: string;
+    content: string;
+    providerModel: string | null;
+    providerBindingVersion: number | null;
+  }) {
     return this.database.transaction((transaction) => {
       const [conversation] = transaction.select({ id: coachConversations.id })
         .from(coachConversations)
@@ -157,6 +162,8 @@ export class ConversationRepository {
         clientRunId: input.clientRunId,
         userMessageId,
         assistantMessageId,
+        providerModel: input.providerModel,
+        providerBindingVersion: input.providerBindingVersion,
         status: "pending",
         createdAt: now,
         updatedAt: now,
@@ -166,6 +173,22 @@ export class ConversationRepository {
         .run();
       return { kind: "created" as const, run, userMessage, assistantMessage };
     });
+  }
+
+  findAssistantRunByClientId(ownerUserId: string, clientRunId: string) {
+    const [run] = this.database.select().from(coachAssistantRuns)
+      .where(and(
+        eq(coachAssistantRuns.ownerUserId, ownerUserId),
+        eq(coachAssistantRuns.clientRunId, clientRunId),
+      )).limit(1).all();
+    if (!run) return null;
+    const [userMessage] = this.database.select().from(coachMessages)
+      .where(and(eq(coachMessages.ownerUserId, ownerUserId), eq(coachMessages.id, run.userMessageId)))
+      .limit(1).all();
+    const [assistantMessage] = this.database.select().from(coachMessages)
+      .where(and(eq(coachMessages.ownerUserId, ownerUserId), eq(coachMessages.id, run.assistantMessageId)))
+      .limit(1).all();
+    return userMessage && assistantMessage ? { run, userMessage, assistantMessage } : null;
   }
 
   getAssistantRunForOwner(ownerUserId: string, conversationId: string, runId: string) {

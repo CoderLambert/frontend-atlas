@@ -51,6 +51,8 @@ export const coachAssistantRuns = sqliteTable("coach_assistant_runs", {
   clientRunId: text("client_run_id").notNull(),
   userMessageId: text("user_message_id").notNull(),
   assistantMessageId: text("assistant_message_id").notNull(),
+  providerModel: text("provider_model"),
+  providerBindingVersion: integer("provider_binding_version"),
   status: text("status").$type<CoachAssistantRunStatus>().notNull().default("pending"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
@@ -74,6 +76,15 @@ export const coachAssistantRuns = sqliteTable("coach_assistant_runs", {
   index("coach_assistant_runs_owner_conversation_created_idx").on(table.ownerUserId, table.conversationId, table.createdAt),
   check("coach_assistant_runs_status_check", sql`${table.status} in ('pending', 'streaming', 'complete', 'interrupted', 'failed', 'cancelled')`),
 ]);
+
+export const coachProviderBindings = sqliteTable("coach_provider_bindings", {
+  ownerUserId: text("owner_user_id").primaryKey().references(() => user.id, { onDelete: "cascade" }),
+  siwcClientId: text("siwc_client_id").notNull().unique(),
+  selectedModel: text("selected_model"),
+  version: integer("version").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+});
 
 export const coachConversationsRelations = relations(coachConversations, ({ many, one }) => ({
   owner: one(user, {

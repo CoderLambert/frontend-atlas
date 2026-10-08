@@ -35,6 +35,18 @@ function accountChanged() {
   return json({ error: "account_changed" }, 409);
 }
 
+function assistantProviderError(error: unknown) {
+  if (!error || typeof error !== "object") return null;
+  const value = error as { name?: unknown; code?: unknown; message?: unknown; status?: unknown };
+  if (value.name !== "AssistantProviderConnectionError"
+    || typeof value.code !== "string"
+    || typeof value.message !== "string"
+    || typeof value.status !== "number"
+    || value.status < 400
+    || value.status > 599) return null;
+  return json({ error: value.code, message: value.message }, value.status);
+}
+
 export function createCoachConversationHandlers(
   service: ConversationService,
   sessions: SessionReader,
@@ -113,7 +125,10 @@ export function createCoachAssistantRunHandlers(
   service: ConversationService,
   sessions: SessionReader,
   runManager: AssistantRunManager,
-  options: { trustedOriginUrl?: string | null; getProvider?: (request: Request) => AssistantProvider | null } = {},
+  options: {
+    trustedOriginUrl?: string | null;
+    getProvider?: (request: Request, ownerUserId: string) => AssistantProvider | null | Promise<AssistantProvider | null>;
+  } = {},
 ) {
   const trustedOriginUrl = options.trustedOriginUrl === undefined
     ? process.env.BETTER_AUTH_URL
@@ -128,12 +143,35 @@ export function createCoachAssistantRunHandlers(
       const ownerUserId = await sessions.getUserId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
       if (!expectedAccountMatches(request, ownerUserId)) return accountChanged();
-      const provider = resolveProvider(request);
-      if (!provider) return json({ error: "assistant_not_connected" }, 503);
       const { conversationId } = await context.params;
       const body = await readObject(request);
       if (!body) return json({ error: "invalid_request" }, 400);
-      const result = service.createAssistantRun(ownerUserId, conversationId, body);
+      const existing = service.findAssistantRunByClientId(ownerUserId, conversationId, body);
+      if (existing.kind === "invalid") return json({ error: "invalid_run" }, 400);
+      if (existing.kind === "conflict") return json({ error: "idempotency_conflict" }, 409);
+      if (existing.kind === "existing") {
+        return json({
+          duplicate: true,
+          run: existing.run,
+          userMessage: existing.userMessage,
+          assistantMessage: existing.assistantMessage,
+        });
+      }
+      let provider: AssistantProvider | null;
+      try {
+        provider = await resolveProvider(request, ownerUserId);
+      } catch (error) {
+        const known = assistantProviderError(error);
+        if (known) return known;
+        return json({ error: "provider_unavailable", message: "本机 ChatGPT 连接服务暂不可达。" }, 503);
+      }
+      if (!provider) return json({ error: "assistant_not_connected" }, 503);
+      const result = service.createAssistantRun(ownerUserId, conversationId, {
+        clientRunId: body.clientRunId,
+        content: body.content,
+        providerModel: provider.model,
+        providerBindingVersion: provider.bindingVersion,
+      });
       if (result.kind === "invalid") return json({ error: "invalid_run" }, 400);
       if (result.kind === "not-found") return json({ error: "not_found" }, 404);
       if (result.kind === "conflict") return json({ error: "idempotency_conflict" }, 409);
@@ -156,6 +194,10 @@ export function createCoachAssistantRunHandlers(
         ownerUserId,
         conversationId,
         userContent: result.userMessage.content,
+        messages: (service.find(ownerUserId, conversationId)?.messages ?? [])
+          .filter((message) => message.id !== result.assistantMessage.id && message.content.length > 0)
+          .slice(-39)
+          .map((message) => ({ role: message.role, content: message.content })),
         userMessage: result.userMessage,
         assistantMessage: result.assistantMessage,
         provider,

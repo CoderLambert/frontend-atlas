@@ -1,6 +1,6 @@
 # 知序 · 前端面试学习站
 
-面向个人复习的 Next.js App Router 学习站。默认构建仍是静态学习站；可选的 AI 答题教练只在本地运行配置中启用。资料保留原题 ID、章节映射和来源信息；练习回答、自评、复习安排，以及本地教练的发送内容与反馈，只保存在当前浏览器的 IndexedDB 中。
+面向个人复习的 Next.js App Router 学习站。默认构建仍是静态学习站；可选的 AI 答题教练只在本地运行配置中启用。资料保留原题 ID、章节映射和来源信息。普通学习记录和旧版 `/coach/` 对话保存在当前浏览器的 IndexedDB；登录后的 `/coach/sessions/` 会话、消息和助手运行按站点用户保存在本机 SQLite。
 
 ## 内容范围
 
@@ -22,7 +22,7 @@ npm ci
 npm run dev
 ```
 
-如需启用服务端账号聊天，请按[本地账号会话配置说明](./docs/server-saved-chat-local.md)准备 SQLite 数据库和 OAuth 提供方。
+如需启用服务端账号聊天和真实 ChatGPT 回复，请按[本地账号会话配置说明](./docs/server-saved-chat-local.md)准备 SQLite 数据库、OAuth 提供方和受控 SIWC profile 分配。
 
 默认开发命令只运行学习站。若要试用本机 AI 答题教练，请使用单独的本地运行配置：
 
@@ -30,7 +30,7 @@ npm run dev
 npm run local:dev
 ```
 
-然后打开 `http://127.0.0.1:3000`，从导航进入“AI答题教练”。本机 Next.js 页面和 Node 服务分别只绑定 `127.0.0.1:3000` 与 `127.0.0.1:4317`；若端口被占用，启动会停止，不会改用网络接口或自动换端口。登录按钮被点击后才会开始 Sign in with ChatGPT 流程；在 OpenAI 官方页面确认授权前，不会有登录凭据或模型请求。连接后，教练读取该账号当前可用的模型。只有点击“发送并生成反馈”才会发送本题、参考内容和回答。请求使用 Responses API 的 `store: false` 与流式响应，不自动切换到 API Key 计费。
+然后打开 `http://127.0.0.1:3000`。本机 Next.js 页面和 Node 服务分别只绑定 `127.0.0.1:3000` 与 `127.0.0.1:4317`；若端口被占用，启动会停止，不会改用网络接口或自动换端口。旧版“AI答题教练”仍把对话保存在 IndexedDB；“账号会话”会在可信操作者把本机 SIWC profile 分配给站点用户后，将真实回复写入该用户的 SQLite 会话。两项功能都通过 SIWC 读取账号当前可用模型，请求使用 Responses API 的 `store: false` 与流式响应，不自动切换到 API Key 计费。
 
 若要使用本机 production preview，可运行 `npm run local:build`，再运行 `npm run local:start`。`local:build` 使用 Node 服务支持的 Next.js 构建配置，不是 Sites 静态发布包。
 
@@ -45,6 +45,8 @@ npm run lint
 npm run typecheck
 npm run test:backup
 npm run test:siwc
+npm run test:provider-connection
+npm run test:assistant-run
 npm run build
 npm run verify:static-boundary
 ```
@@ -60,4 +62,4 @@ npm run verify:static-boundary
 - 退出时确认远端撤销结果；如果本机凭据无法清除，重试清理并确认账号不可继续使用。
 - 在桌面与窄屏视口检查键盘导航、焦点、草稿恢复、题目切换和错误提示。
 
-静态学习记录与本地教练对话保存在浏览器的 IndexedDB 中，不会同步到账号或其他设备。换浏览器或清理站点数据前，请在“本设备数据”页导出 JSON 备份并妥善保管；新版备份包含 AI 对话，并兼容导入旧版备份。
+静态学习记录与旧版本地教练对话保存在浏览器的 IndexedDB 中，不会自动同步到账号。换浏览器或清理站点数据前，请在“本设备数据”页导出 JSON 备份并妥善保管；新版备份包含旧版 AI 对话，并兼容导入旧版备份。登录后的账号会话另存于本机 SQLite；旧记录必须在账号会话页预览并确认后才会导入，原 IndexedDB 记录不会自动上传或删除。
