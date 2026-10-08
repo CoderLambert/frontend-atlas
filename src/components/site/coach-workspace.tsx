@@ -100,6 +100,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
   const [status, setStatus] = useState<SessionStatus>(initialStatus);
   const [statusLoading, setStatusLoading] = useState(true);
   const [backendAvailable, setBackendAvailable] = useState<boolean | null>(null);
+  const [connectionIssue, setConnectionIssue] = useState<"wrong-origin" | "unavailable" | null>(null);
   const [models, setModels] = useState<ModelChoice[]>([]);
   const [model, setModel] = useState("");
   const [modelsLoading, setModelsLoading] = useState(false);
@@ -237,11 +238,18 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
       const data = await requestJson("/api/session");
       setStatus(data as SessionStatus);
       setBackendAvailable(true);
+      setConnectionIssue(null);
       setError("");
     } catch (cause) {
+      const wrongOrigin = window.location.hostname === "localhost";
       setBackendAvailable(false);
+      setConnectionIssue(wrongOrigin ? "wrong-origin" : "unavailable");
       setStatus(initialStatus);
-      if (cause instanceof Error && !cause.message.includes("本地服务")) setError(cause.message);
+      if (wrongOrigin || !(cause instanceof Error) || cause.message === "Failed to fetch" || cause.message.includes("本地服务")) {
+        setError("");
+      } else {
+        setError(cause.message);
+      }
     } finally {
       setStatusLoading(false);
     }
@@ -623,7 +631,32 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
         <Card className="coach-account-card">
           <CardContent className="coach-offline">
             <AlertCircle size={20} aria-hidden="true" />
-            <div><strong>本地服务尚未连接</strong><p>在项目文件夹中运行 npm run local:dev，再打开 http://127.0.0.1:3000。</p></div>
+            <div>
+              {connectionIssue === "wrong-origin" ? (
+                <>
+                  <strong>当前地址与本机服务不一致</strong>
+                  <p>本机连接只接受 127.0.0.1；当前使用 localhost。切换会保留当前路径和题目参数。如果切换后仍不可达，请确认 npm run local:dev 正在运行。</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const target = new URL(window.location.href);
+                      target.protocol = "http:";
+                      target.host = "127.0.0.1:3000";
+                      window.location.assign(target.toString());
+                    }}
+                  >
+                    <ArrowUpRight size={14} aria-hidden="true" />
+                    打开 127.0.0.1:3000
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <strong>{connectionIssue === "unavailable" ? "本机服务暂不可达" : "正在检查本机服务…"}</strong>
+                  <p>请确认本机服务已启动：在项目文件夹中运行 npm run local:dev，再打开 http://127.0.0.1:3000。</p>
+                </>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
