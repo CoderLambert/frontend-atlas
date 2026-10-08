@@ -1,5 +1,6 @@
 import type { SessionReader } from "../auth-session.ts";
 import type { ConversationService } from "./conversation-service.ts";
+import { createWriteRequestGuard } from "./write-request-guard.ts";
 
 type RouteParameters = { conversationId: string };
 type HandlerContext = { params: Promise<RouteParameters> };
@@ -20,7 +21,16 @@ async function readObject(request: Request): Promise<Record<string, unknown> | n
   }
 }
 
-export function createCoachConversationHandlers(service: ConversationService, sessions: SessionReader) {
+export function createCoachConversationHandlers(
+  service: ConversationService,
+  sessions: SessionReader,
+  options: { trustedOriginUrl?: string | null } = {},
+) {
+  const trustedOriginUrl = options.trustedOriginUrl === undefined
+    ? process.env.BETTER_AUTH_URL
+    : options.trustedOriginUrl;
+  const guardWriteRequest = createWriteRequestGuard(trustedOriginUrl);
+
   async function userId(request: Request) {
     return sessions.getUserId(request);
   }
@@ -33,6 +43,8 @@ export function createCoachConversationHandlers(service: ConversationService, se
     },
 
     async create(request: Request) {
+      const blocked = guardWriteRequest(request);
+      if (blocked) return blocked;
       const ownerUserId = await userId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
       const body = await readObject(request);
@@ -52,6 +64,8 @@ export function createCoachConversationHandlers(service: ConversationService, se
     },
 
     async delete(request: Request, context: HandlerContext) {
+      const blocked = guardWriteRequest(request);
+      if (blocked) return blocked;
       const ownerUserId = await userId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
       const { conversationId } = await context.params;
@@ -60,6 +74,8 @@ export function createCoachConversationHandlers(service: ConversationService, se
     },
 
     async appendMessage(request: Request, context: HandlerContext) {
+      const blocked = guardWriteRequest(request);
+      if (blocked) return blocked;
       const ownerUserId = await userId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
       const { conversationId } = await context.params;
