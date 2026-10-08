@@ -7,6 +7,14 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { CoachMarkdownImage, splitTrailingUnclosedFence } from "@/lib/coach-markdown.mjs";
 import { safeMarkdownHref } from "@/lib/safe-markdown-url.mjs";
 
+function ScrollableMarkdownTable({ children }: { children?: ReactNode }) {
+  return (
+    <div className="markdown-table-scroll" role="region" aria-label="可横向滚动的表格" tabIndex={0}>
+      <table>{children}</table>
+    </div>
+  );
+}
+
 export function CoachMarkdown({ source, streaming }: { source: string; streaming: boolean }) {
   const { body, unfinishedCode } = splitTrailingUnclosedFence(source);
   return (
@@ -19,7 +27,7 @@ export function CoachMarkdown({ source, streaming }: { source: string; streaming
             const safe = safeMarkdownHref(href);
             return safe ? <a href={safe} target="_blank" rel="noreferrer">{children}</a> : <span>{children}</span>;
           },
-          table: ({ children }) => <div className="markdown-table-scroll"><table>{children}</table></div>,
+          table: ScrollableMarkdownTable,
           pre: ({ children }) => {
             const child = Children.toArray(children)[0];
             if (!isValidElement<{ className?: string; children?: ReactNode }>(child) || child.type !== "code") {
