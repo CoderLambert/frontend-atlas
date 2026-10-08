@@ -34,6 +34,7 @@ function waitForChunk(signal: AbortSignal) {
     const onAbort = () => finish(true);
     const timer = setTimeout(() => finish(false), 160);
     signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) finish(true);
   });
 }
 

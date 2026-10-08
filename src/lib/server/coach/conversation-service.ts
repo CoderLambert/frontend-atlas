@@ -17,7 +17,10 @@ export class ConversationService {
 
   constructor(repository: ConversationRepository) {
     this.repository = repository;
-    this.repository.interruptUnfinishedAssistantRuns();
+  }
+
+  recoverUnfinishedAssistantRuns() {
+    return this.repository.interruptUnfinishedAssistantRuns();
   }
 
   list(ownerUserId: string) {

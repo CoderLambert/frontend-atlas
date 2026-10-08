@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { register } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { openSqliteDatabase } from "../src/lib/db/sqlite.ts";
 import { AssistantRunManager } from "../src/lib/server/coach/assistant-run-manager.ts";
+import { createLocalMockAssistantProvider } from "../src/lib/server/coach/assistant-provider.ts";
 import { ConversationRepository } from "../src/lib/server/coach/conversation-repository.ts";
 import { ConversationService } from "../src/lib/server/coach/conversation-service.ts";
 import { createCoachAssistantRunHandlers } from "../src/lib/server/coach/route-handlers.ts";
@@ -13,6 +16,12 @@ import { createCoachAssistantRunHandlers } from "../src/lib/server/coach/route-h
 const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const tempRoot = mkdtempSync(join(tmpdir(), "frontend-atlas-assistant-run-"));
 const databasePath = join(tempRoot, "assistant.sqlite");
+const serverOnlyLoaderPath = join(tempRoot, "server-only-loader.mjs");
+writeFileSync(serverOnlyLoaderPath, `export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "server-only") return { url: "data:text/javascript,", shortCircuit: true };
+  return nextResolve(specifier, context);
+}\n`);
+register(pathToFileURL(serverOnlyLoaderPath), import.meta.url);
 const migrationPath = join(projectRoot, "src/lib/db/migrations");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -93,6 +102,22 @@ function createProvider(stream, onStart = () => {}) {
     },
   };
 }
+
+let abortRaceObserved = false;
+const abortRaceSignal = {
+  get aborted() {
+    return abortRaceObserved;
+  },
+  addEventListener(type) {
+    if (type === "abort") abortRaceObserved = true;
+  },
+  removeEventListener() {},
+};
+const abortRaceIterator = createLocalMockAssistantProvider()
+  .stream({ content: "cancel before first chunk", signal: abortRaceSignal })
+  [Symbol.asyncIterator]();
+const abortRaceResult = await abortRaceIterator.next();
+assert.equal(abortRaceResult.done, true, "an abort between the initial check and listener registration never yields a Mock chunk");
 
 function conversation(service, id, owner = "user-a", qid = "UNKNOWN-QID-KEEP") {
   const result = service.create(owner, { title: `Test ${id}`, qid });
@@ -449,21 +474,105 @@ try {
   assert.equal(providerFailureRun.run.status, "failed");
   assert.equal(providerFailureRun.assistantMessage.content, "partial before provider error");
 
-  const restartConversation = conversation(service, "restart");
-  const restartCreated = service.createAssistantRun("user-a", restartConversation.id, { clientRunId: "restart-key", content: "Interrupted before shutdown." });
-  assert.equal(restartCreated.kind, "created");
-  service.beginAssistantRun(restartCreated.run.id);
-  service.appendAssistantRunContent(restartCreated.run.id, "persist this partial reply");
-  opened.client.close();
-  opened = openSqliteDatabase(databasePath);
-  migrate(opened.db, { migrationsFolder: migrationPath });
-  service = new ConversationService(new ConversationRepository(opened.db));
-  const restored = service.getAssistantRun("user-a", restartConversation.id, restartCreated.run.id);
-  assert.equal(restored.run.status, "interrupted", "startup recovery marks unfinished persisted runs interrupted");
-  assert.equal(restored.assistantMessage.status, "interrupted");
-  assert.equal(restored.assistantMessage.content, "persist this partial reply", "restart recovery preserves the last committed partial content");
+  process.env.FRONTEND_ATLAS_DB_PATH = databasePath;
+  globalThis.__frontendAtlasDatabase = opened;
+  const runtimeModuleUrl = new URL("../src/lib/server/coach/conversation-runtime.ts", import.meta.url).href;
+  const runtime = await import(runtimeModuleUrl);
+  const runtimeConversation = conversation(runtime.conversationService, "runtime-hmr");
+  let runtimeProviderCalls = 0;
+  let releaseRuntimeProvider;
+  const runtimeGate = new Promise((resolve) => { releaseRuntimeProvider = resolve; });
+  const runtimeProvider = createProvider(async function* () {
+    yield "live run survives HMR";
+    await runtimeGate;
+    yield " and completes";
+  }, () => { runtimeProviderCalls += 1; });
+  const runtimeCreated = runtime.conversationService.createAssistantRun("user-a", runtimeConversation.id, {
+    clientRunId: "runtime-hmr-key",
+    content: "Keep this run active across a module reload.",
+  });
+  assert.equal(runtimeCreated.kind, "created");
+  const runtimeHandle = runtime.assistantRunManager.start({
+    runId: runtimeCreated.run.id,
+    ownerUserId: "user-a",
+    conversationId: runtimeConversation.id,
+    userContent: runtimeCreated.userMessage.content,
+    userMessage: runtimeCreated.userMessage,
+    assistantMessage: runtimeCreated.assistantMessage,
+    provider: runtimeProvider,
+  });
+  try {
+    for (let attempt = 0; attempt < 40; attempt += 1) {
+      const active = runtime.conversationService.getAssistantRun("user-a", runtimeConversation.id, runtimeCreated.run.id);
+      if (active?.run.status === "streaming" && active.assistantMessage.content === "live run survives HMR") break;
+      await delay(25);
+    }
+    const active = runtime.conversationService.getAssistantRun("user-a", runtimeConversation.id, runtimeCreated.run.id);
+    assert.equal(active.run.status, "streaming");
+    assert.equal(active.assistantMessage.content, "live run survives HMR");
 
-  process.stdout.write("assistant run: fail-closed provider, atomic/idempotent creation, terminal-tail/full-content verification, disconnect/cancel, write-failure recovery, persistence signals, prefetched rejection handling, owner isolation, unknown qid preservation, and restart recovery passed\n");
+    const secondService = new ConversationService(new ConversationRepository(opened.db));
+    assert.equal(secondService.getAssistantRun("user-a", runtimeConversation.id, runtimeCreated.run.id).run.status, "streaming", "constructing a second service never performs startup recovery");
+
+    const reloadedRuntime = await import(`${runtimeModuleUrl}?hmr=${Date.now()}`);
+    assert.strictEqual(reloadedRuntime.conversationService, runtime.conversationService, "module reload reuses the process-local service singleton");
+    assert.strictEqual(reloadedRuntime.assistantRunManager, runtime.assistantRunManager, "module reload reuses the active run manager");
+    assert.equal(reloadedRuntime.conversationService.getAssistantRun("user-a", runtimeConversation.id, runtimeCreated.run.id).run.status, "streaming", "HMR does not mark a live run interrupted");
+    assert.equal(runtimeProviderCalls, 1, "HMR does not invoke the provider a second time");
+  } finally {
+    releaseRuntimeProvider();
+  }
+  const runtimeCompletion = await runtimeHandle.completion;
+  assert.equal(runtimeCompletion.status, "complete");
+
+  const restartConversation = conversation(runtime.conversationService, "restart");
+  const pendingCreated = runtime.conversationService.createAssistantRun("user-a", restartConversation.id, { clientRunId: "restart-pending-key", content: "Pending before process exit." });
+  const streamingCreated = runtime.conversationService.createAssistantRun("user-a", restartConversation.id, { clientRunId: "restart-streaming-key", content: "Streaming before process exit." });
+  assert.equal(pendingCreated.kind, "created");
+  assert.equal(streamingCreated.kind, "created");
+  runtime.conversationService.beginAssistantRun(streamingCreated.run.id);
+  runtime.conversationService.appendAssistantRunContent(streamingCreated.run.id, "persist this partial reply");
+  const runCountBeforeRestart = opened.client.prepare("SELECT count(*) AS count FROM coach_assistant_runs").get().count;
+  opened.client.close();
+  opened = undefined;
+
+  const childSource = `
+    import { register } from "node:module";
+    import { pathToFileURL } from "node:url";
+    register(pathToFileURL(${JSON.stringify(serverOnlyLoaderPath)}), import.meta.url);
+    const [{ conversationService }, { db }, { coachAssistantRuns }] = await Promise.all([
+      import(${JSON.stringify(runtimeModuleUrl)}),
+      import(${JSON.stringify(new URL("../src/lib/db/index.ts", import.meta.url).href)}),
+      import(${JSON.stringify(new URL("../src/lib/db/schema.ts", import.meta.url).href)}),
+    ]);
+    const pending = conversationService.getAssistantRun("user-a", ${JSON.stringify(restartConversation.id)}, ${JSON.stringify(pendingCreated.run.id)});
+    const streaming = conversationService.getAssistantRun("user-a", ${JSON.stringify(restartConversation.id)}, ${JSON.stringify(streamingCreated.run.id)});
+    const runCount = db.select().from(coachAssistantRuns).all().length;
+    console.log(JSON.stringify({ pendingStatus: pending?.run.status, streamingStatus: streaming?.run.status, streamingContent: streaming?.assistantMessage.content, runCount }));
+    globalThis.__frontendAtlasDatabase?.client.close();
+  `;
+  const restartedProcess = spawnSync(process.execPath, [
+    "--conditions=react-server",
+    "--disable-warning=MODULE_TYPELESS_PACKAGE_JSON",
+    "--experimental-strip-types",
+    "--input-type=module",
+    "-e",
+    childSource,
+  ], {
+    cwd: projectRoot,
+    encoding: "utf8",
+    env: { ...process.env, FRONTEND_ATLAS_DB_PATH: databasePath },
+    maxBuffer: 1024 * 1024,
+  });
+  assert.equal(restartedProcess.status, 0, `fresh process imports the runtime successfully: ${restartedProcess.stderr}`);
+  const restartResult = JSON.parse(restartedProcess.stdout.trim());
+  assert.equal(restartResult.pendingStatus, "interrupted", "fresh process startup recovers old pending runs");
+  assert.equal(restartResult.streamingStatus, "interrupted", "fresh process startup recovers old streaming runs");
+  assert.equal(restartResult.streamingContent, "persist this partial reply", "restart recovery preserves committed partial output");
+  assert.equal(restartResult.runCount, runCountBeforeRestart, "startup recovery does not create a replacement run or reissue the provider");
+  assert.equal(runtimeProviderCalls, 1, "the completed live run used one provider request across HMR");
+
+  process.stdout.write("assistant run: fail-closed provider, atomic/idempotent creation, terminal-tail/full-content verification, disconnect/cancel, write-failure recovery, persistence signals, prefetched rejection handling, owner isolation, HMR-safe runtime reuse, and fresh-process restart recovery passed\n");
 } finally {
   try { opened?.client.close(); } catch { /* already closed during restart check */ }
   rmSync(tempRoot, { recursive: true, force: true });

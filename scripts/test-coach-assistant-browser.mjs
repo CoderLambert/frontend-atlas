@@ -13,8 +13,8 @@ const tempRoot = mkdtempSync(join(tmpdir(), "frontend-atlas-assistant-browser-")
 const databasePath = join(tempRoot, "assistant.sqlite");
 const browserProfilePath = join(tempRoot, "chromium-profile");
 const chromiumPath = process.env.CHROMIUM_PATH || "/usr/bin/chromium";
-const desktopScreenshot = "/home/lambert/Documents/Codex/2026-10-08/task-3/frontend-atlas-coach-assistant-mock-desktop.png";
-const mobileScreenshot = "/home/lambert/Documents/Codex/2026-10-08/task-3/frontend-atlas-coach-assistant-mock-mobile.png";
+const desktopScreenshot = process.env.FRONTEND_ATLAS_ASSISTANT_DESKTOP_SCREENSHOT || join(tmpdir(), "frontend-atlas-coach-assistant-mock-desktop.png");
+const mobileScreenshot = process.env.FRONTEND_ATLAS_ASSISTANT_MOBILE_SCREENSHOT || join(tmpdir(), "frontend-atlas-coach-assistant-mock-mobile.png");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let nextProcess = null;
 let chromeProcess = null;
@@ -40,6 +40,8 @@ function seedDatabase() {
   const now = Date.now();
   opened.client.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
     .run("mock-user-a", "Mock User A", "mock-a@example.test", 0, now, now);
+  opened.client.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("mock-user-b", "Mock User B", "mock-b@example.test", 0, now, now);
   opened.client.close();
 }
 
@@ -194,10 +196,21 @@ try {
   await browser.evaluate(setValueExpression("#account-session-title", "Mock assistant showcase"));
   await browser.evaluate("document.querySelector('[data-testid=create-conversation]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=conversation-messages]') !== null")), "new conversation detail");
+  await browser.evaluate(`(() => {
+    const nativeSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key.startsWith("frontend-atlas:coach-unsaved-assistant:v1:")) {
+        window.__lastAssistantRecovery = JSON.parse(value);
+      }
+      return nativeSetItem.call(this, key, value);
+    };
+  })()`);
   await browser.evaluate(setValueExpression("#account-message", "请演示一次本机助手流式传输。"));
   await browser.evaluate("document.querySelector('[data-testid=send-message]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-message-status=streaming]') !== null")), "streaming assistant message");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('.coach-account-messages li[data-message-status=complete] .coach-markdown') !== null")), "completed assistant message");
+  const initialRecoveryRecord = await browser.evaluate("window.__lastAssistantRecovery");
+  assert.ok(initialRecoveryRecord?.content.includes("Mock 运行结束后"), "the real streamed assistant content was captured in the local recovery buffer");
   process.stdout.write("assistant browser: first streaming response completed\n");
   const acceptedUi = await browser.evaluate(`(() => ({
     mockLabel: document.body.innerText.includes("本机 Mock 体验"),
@@ -255,6 +268,84 @@ try {
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('.coach-account-messages li[data-message-status=cancelled] .coach-markdown') !== null")), "cancelled assistant message", 10_000);
   assert.equal(await browser.evaluate("document.querySelector('[data-testid=message-draft]').value"), stoppedInput, "stopping a run keeps the unsent draft available");
 
+  const unsavedInput = "请演示一次本机助手流式传输。";
+  await browser.evaluate(`(() => {
+    const clipboard = { writeText: async (text) => { window.__copiedAssistantText = text; } };
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+  })()`);
+
+  let fullUnsavedAssistantContent = "";
+  let recoveryRecord = initialRecoveryRecord;
+  assert.ok(recoveryRecord, "streaming assistant chunks wrote an account-scoped recovery buffer");
+  const unsavedAssistantMessageId = recoveryRecord.messageId;
+  const openedForRecovery = openSqliteDatabase(databasePath);
+  try {
+    const assistant = openedForRecovery.client.prepare("SELECT id, conversation_id, content FROM coach_messages WHERE id = ?").get(unsavedAssistantMessageId);
+    fullUnsavedAssistantContent = assistant.content;
+    assert.ok(fullUnsavedAssistantContent.includes("Mock 运行结束后"), "the test run completed with the full Mock tail in SQLite before simulating a stale prefix");
+    assert.equal(recoveryRecord.content, fullUnsavedAssistantContent, "the actual stream buffer captured the full generated content");
+    recoveryRecord = { ...recoveryRecord, status: "failed", retryMode: "new" };
+    const storageKey = "frontend-atlas:coach-unsaved-assistant:v1:"
+      + encodeURIComponent(recoveryRecord.accountId)
+      + ":" + encodeURIComponent(recoveryRecord.conversationId)
+      + ":" + encodeURIComponent(recoveryRecord.messageId);
+    await browser.evaluate("sessionStorage.setItem(" + JSON.stringify(storageKey) + "," + JSON.stringify(JSON.stringify(recoveryRecord)) + ")");
+    openedForRecovery.client.prepare("UPDATE coach_messages SET content = ? WHERE id = ?").run(fullUnsavedAssistantContent.slice(0, 48), assistant.id);
+  } finally {
+    openedForRecovery.client.close();
+  }
+
+  await browser.evaluate(`(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.__seenStaleAssistantPrefix = false;
+    window.fetch = async (input, init = {}) => {
+      const response = await nativeFetch(input, init);
+      const url = typeof input === "string" ? new URL(input, location.origin) : new URL(input.url);
+      if (url.pathname.startsWith("/api/coach/conversations/") && url.pathname !== "/api/coach/conversations/") {
+        const payload = await response.clone().json().catch(() => null);
+        const assistant = payload?.conversation?.messages?.find((message) => message.id === ${JSON.stringify(unsavedAssistantMessageId)});
+        if (assistant?.content.length === 48) window.__seenStaleAssistantPrefix = true;
+      }
+      return response;
+    };
+    window.dispatchEvent(new Event("focus"));
+  })()`);
+  await waitFor(() => browser.evaluate(shellReadyExpression("window.__seenStaleAssistantPrefix === true")), "focus refresh reads the old SQLite prefix");
+  await waitFor(() => browser.evaluate(`(() => {
+    const userMessage = Array.from(document.querySelectorAll('[data-testid=saved-message]'))
+      .find((message) => message.innerText.includes(${JSON.stringify(unsavedInput)}));
+    const assistantMessage = userMessage?.nextElementSibling;
+    return Boolean(assistantMessage?.querySelector('[data-testid=copy-unsaved-assistant-reply]'))
+      && assistantMessage?.innerText.includes("Mock 运行结束后")
+      && document.querySelector('[data-testid=retry-message]') !== null;
+  })()`), "focus refresh merges the full unsaved tail over the old SQLite prefix");
+  const recoveredContent = await browser.evaluate(`(() => {
+    const prefix = "frontend-atlas:coach-unsaved-assistant:v1:";
+    for (let index = 0; index < sessionStorage.length; index += 1) {
+      const key = sessionStorage.key(index);
+      if (!key?.startsWith(prefix)) continue;
+      const record = JSON.parse(sessionStorage.getItem(key));
+      if (record.accountId === "mock-user-a" && record.messageId === ${JSON.stringify(unsavedAssistantMessageId)} && record.userContent === ${JSON.stringify(unsavedInput)}) return record.content;
+    }
+    return null;
+  })()`);
+  assert.equal(recoveredContent, fullUnsavedAssistantContent, "recovery buffer is scoped to the owner, conversation, and assistant message and keeps the full tail");
+  await browser.evaluate(`(() => {
+    const userMessage = Array.from(document.querySelectorAll('[data-testid=saved-message]'))
+      .find((message) => message.innerText.includes(${JSON.stringify(unsavedInput)}));
+    userMessage?.nextElementSibling?.querySelector('[data-testid=copy-unsaved-assistant-reply]')?.click();
+  })()`);
+  await waitFor(() => browser.evaluate(shellReadyExpression("window.__copiedAssistantText !== undefined")), "recovered reply copy");
+  assert.equal(await browser.evaluate("window.__copiedAssistantText"), fullUnsavedAssistantContent, "the recovered full tail remains copyable");
+
+  await browser.evaluate("document.querySelector('[data-testid=site-account-sign-out]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=copy-backup-and-leave]') !== null")), "explicit unsaved departure choice");
+  await browser.evaluate("document.querySelector('[data-testid=copy-backup-and-leave]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=mock-login-b]') !== null")), "account A signs out after explicit backup");
+  await browser.evaluate("document.querySelector('[data-testid=mock-login-b]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('mock-b@example.test')")), "account B signs in");
+  assert.equal(await browser.evaluate("document.body.innerText.includes(" + JSON.stringify(fullUnsavedAssistantContent) + ")"), false, "another account never sees account A's recovery text");
+
   const opened = openSqliteDatabase(databasePath);
   try {
     const persisted = opened.client.prepare("SELECT role, status, content FROM coach_messages ORDER BY created_at").all();
@@ -262,7 +353,8 @@ try {
     assert.deepEqual(persisted.map((message) => message.role), ["user", "assistant", "user", "assistant"]);
     assert.equal(persisted[1].status, "complete");
     assert.equal(persisted[3].status, "cancelled");
-    assert.ok(persisted[1].content.includes('const provider = "未连接";'));
+    assert.equal(persisted[1].content.length, 48, "the database remains at the simulated old prefix while the UI recovers the complete tail locally");
+    assert.ok(fullUnsavedAssistantContent.includes('const provider = "未连接";'), "the captured full assistant content keeps the Mock code sample");
     assert.ok(persisted[3].content.length > 0, "cancelled stream preserves its partial answer");
   } finally {
     opened.client.close();

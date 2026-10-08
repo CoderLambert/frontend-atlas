@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { copyCodeText } from "@/lib/copy-code.mjs";
 
 const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
@@ -45,6 +46,105 @@ type ConversationMessage = {
 type ConversationDetail = ConversationSummary & { messages: ConversationMessage[] };
 type PendingSubmission = { id: string; conversationId: string; content: string };
 type LoadSessionOptions = { broadcastChange?: boolean };
+type UnsavedAssistantRecovery = {
+  version: 1;
+  accountId: string;
+  conversationId: string;
+  messageId: string;
+  clientMessageId: string;
+  userContent: string;
+  content: string;
+  status: ConversationMessage["status"];
+  retryMode: "same" | "new";
+  createdAt: string;
+};
+type DepartureAction =
+  | { kind: "select-conversation"; conversationId: string }
+  | { kind: "create-conversation"; title: string }
+  | { kind: "sign-out" };
+type PendingDeparture = { action: DepartureAction; recoveries: UnsavedAssistantRecovery[] };
+
+const unsavedRecoveryPrefix = "frontend-atlas:coach-unsaved-assistant:v1:";
+const conversationMessageStatuses = new Set<ConversationMessage["status"]>(["pending", "streaming", "complete", "interrupted", "failed", "cancelled"]);
+
+function unsavedRecoveryKey(accountId: string, conversationId: string, messageId: string) {
+  return unsavedRecoveryPrefix + encodeURIComponent(accountId) + ":" + encodeURIComponent(conversationId) + ":" + encodeURIComponent(messageId);
+}
+
+function readUnsavedRecovery(accountId: string, conversationId: string, messageId: string): UnsavedAssistantRecovery | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value: unknown = JSON.parse(window.sessionStorage.getItem(unsavedRecoveryKey(accountId, conversationId, messageId)) ?? "null");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (record.version !== 1
+      || record.accountId !== accountId
+      || record.conversationId !== conversationId
+      || record.messageId !== messageId
+      || typeof record.clientMessageId !== "string"
+      || typeof record.userContent !== "string"
+      || typeof record.content !== "string"
+      || typeof record.status !== "string"
+      || !conversationMessageStatuses.has(record.status as ConversationMessage["status"])
+      || (record.retryMode !== "same" && record.retryMode !== "new")
+      || typeof record.createdAt !== "string") return null;
+    return record as UnsavedAssistantRecovery;
+  } catch {
+    return null;
+  }
+}
+
+function writeUnsavedRecovery(record: UnsavedAssistantRecovery) {
+  if (typeof window === "undefined") return false;
+  try {
+    window.sessionStorage.setItem(unsavedRecoveryKey(record.accountId, record.conversationId, record.messageId), JSON.stringify(record));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function removeUnsavedRecovery(accountId: string, conversationId: string, messageId: string) {
+  if (typeof window === "undefined") return false;
+  try {
+    window.sessionStorage.removeItem(unsavedRecoveryKey(accountId, conversationId, messageId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function restoreUnsavedAssistantMessages(
+  conversation: ConversationDetail,
+  accountId: string,
+  recoveryCache: Map<string, UnsavedAssistantRecovery>,
+) {
+  const recoveries: UnsavedAssistantRecovery[] = [];
+  const messages = conversation.messages.map((message) => {
+    if (message.role !== "assistant") return message;
+    const key = unsavedRecoveryKey(accountId, conversation.id, message.id);
+    const recovery = recoveryCache.get(key) ?? readUnsavedRecovery(accountId, conversation.id, message.id);
+    if (!recovery) return message;
+    recoveryCache.set(key, recovery);
+
+    if (recovery.content.startsWith(message.content)) {
+      if (recovery.content === message.content) {
+        recoveryCache.delete(key);
+        removeUnsavedRecovery(accountId, conversation.id, message.id);
+        return message;
+      }
+      recoveries.push(recovery);
+      return { ...message, content: recovery.content, status: recovery.status, contentPersisted: false };
+    }
+
+    if (message.content.startsWith(recovery.content)) {
+      recoveryCache.delete(key);
+      removeUnsavedRecovery(accountId, conversation.id, message.id);
+    }
+    return message;
+  });
+  return { conversation: { ...conversation, messages }, recoveries };
+}
 
 function upsertConversationMessages(current: ConversationDetail | null, conversationId: string, incoming: ConversationMessage[]) {
   if (!current || current.id !== conversationId) return current;
@@ -162,6 +262,9 @@ export function CoachAccountSessions() {
   const [error, setError] = useState("");
   const [messageError, setMessageError] = useState("");
   const [notice, setNotice] = useState("");
+  const [pendingDeparture, setPendingDeparture] = useState<PendingDeparture | null>(null);
+  const [departureBusy, setDepartureBusy] = useState(false);
+  const [recoveryStorageError, setRecoveryStorageError] = useState(false);
   const epochRef = useRef(0);
   const conversationEpochRef = useRef(0);
   const conversationListEpochRef = useRef(0);
@@ -171,11 +274,97 @@ export function CoachAccountSessions() {
   const requestsRef = useRef(new Set<AbortController>());
   const detailRequestRef = useRef<AbortController | null>(null);
   const messageRequestRef = useRef<AbortController | null>(null);
-  const activeRunRef = useRef<{ runId: string; assistantMessageId: string; conversationId: string; accountId: string; content: string } | null>(null);
+  const activeRunRef = useRef<{
+    runId: string;
+    assistantMessageId: string;
+    conversationId: string;
+    accountId: string;
+    clientMessageId: string;
+    userContent: string;
+    content: string;
+    createdAt: string;
+  } | null>(null);
+  const recoveryBufferRef = useRef(new Map<string, UnsavedAssistantRecovery>());
+  const discardedRecoveryKeysRef = useRef(new Set<string>());
   const messageBusyRef = useRef(false);
   const pendingSubmissionRef = useRef<PendingSubmission | null>(null);
   const accountChangeChannelRef = useRef<BroadcastChannel | null>(null);
   const loadSessionRef = useRef<((options?: LoadSessionOptions) => Promise<void>) | null>(null);
+
+  const storeRecovery = useCallback((record: UnsavedAssistantRecovery) => {
+    const key = unsavedRecoveryKey(record.accountId, record.conversationId, record.messageId);
+    if (discardedRecoveryKeysRef.current.has(key)) return false;
+    recoveryBufferRef.current.set(key, record);
+    const stored = writeUnsavedRecovery(record);
+    setRecoveryStorageError(!stored);
+    return stored;
+  }, []);
+
+  const clearRecovery = useCallback((record: Pick<UnsavedAssistantRecovery, "accountId" | "conversationId" | "messageId">) => {
+    const key = unsavedRecoveryKey(record.accountId, record.conversationId, record.messageId);
+    recoveryBufferRef.current.delete(key);
+    const removed = removeUnsavedRecovery(record.accountId, record.conversationId, record.messageId);
+    if (!removed) setRecoveryStorageError(true);
+  }, []);
+
+  const persistActiveRunRecovery = useCallback((
+    status: ConversationMessage["status"],
+    retryMode: "same" | "new",
+  ) => {
+    const activeRun = activeRunRef.current;
+    if (!activeRun?.content) return;
+    storeRecovery({
+      version: 1,
+      accountId: activeRun.accountId,
+      conversationId: activeRun.conversationId,
+      messageId: activeRun.assistantMessageId,
+      clientMessageId: activeRun.clientMessageId,
+      userContent: activeRun.userContent,
+      content: activeRun.content,
+      status,
+      retryMode,
+      createdAt: activeRun.createdAt,
+    });
+  }, [storeRecovery]);
+
+  const collectCurrentRecoveries = useCallback(() => {
+    const accountId = accountRef.current?.id;
+    const conversationId = activeConversationIdRef.current;
+    if (!accountId || !conversationId) return [];
+
+    const activeRun = activeRunRef.current;
+    if (activeRun?.accountId === accountId && activeRun.conversationId === conversationId && activeRun.content) {
+      persistActiveRunRecovery("streaming", "same");
+    }
+
+    const recoveries = new Map<string, UnsavedAssistantRecovery>();
+    for (const [key, recovery] of recoveryBufferRef.current) {
+      if (recovery.accountId === accountId && recovery.conversationId === conversationId) recoveries.set(key, recovery);
+    }
+    if (conversation?.id === conversationId) {
+      for (const [index, message] of conversation.messages.entries()) {
+        if (message.role !== "assistant" || message.contentPersisted !== false) continue;
+        const key = unsavedRecoveryKey(accountId, conversationId, message.id);
+        if (recoveries.has(key)) continue;
+        const userMessage = conversation.messages.slice(0, index).reverse().find((candidate) => candidate.role === "user");
+        const recovery = readUnsavedRecovery(accountId, conversationId, message.id) ?? {
+          version: 1 as const,
+          accountId,
+          conversationId,
+          messageId: message.id,
+          clientMessageId: message.clientMessageId,
+          userContent: userMessage?.content ?? "",
+          content: message.content,
+          status: message.status,
+          retryMode: "new" as const,
+          createdAt: message.createdAt,
+        };
+        storeRecovery(recovery);
+        recoveries.set(key, recovery);
+      }
+    }
+    return [...recoveries.values()].filter((recovery) => recovery.content.length > 0);
+  }, [conversation, persistActiveRunRecovery, storeRecovery]);
 
   const registerRequest = useCallback(() => {
     const controller = new AbortController();
@@ -191,6 +380,7 @@ export function CoachAccountSessions() {
 
   const activateConversation = useCallback((conversationId: string | null) => {
     if (activeConversationIdRef.current !== conversationId && messageRequestRef.current) {
+      persistActiveRunRecovery("interrupted", "new");
       messageRequestRef.current.abort();
       messageRequestRef.current = null;
       messageBusyRef.current = false;
@@ -204,7 +394,7 @@ export function CoachAccountSessions() {
     activeConversationIdRef.current = conversationId;
     setActiveConversationId(conversationId);
     return conversationEpochRef.current;
-  }, []);
+  }, [persistActiveRunRecovery]);
 
   const notifyAccountChange = useCallback(() => {
     accountChangeChannelRef.current?.postMessage({ type: "account-changed" });
@@ -227,6 +417,7 @@ export function CoachAccountSessions() {
     detailRequestRef.current = null;
     messageRequestRef.current = null;
     activeRunRef.current = null;
+    recoveryBufferRef.current.clear();
     accountRef.current = null;
     messageBusyRef.current = false;
     pendingSubmissionRef.current = null;
@@ -243,6 +434,8 @@ export function CoachAccountSessions() {
     setTitleDraft("");
     setError("");
     setNotice("");
+    setPendingDeparture(null);
+    setDepartureBusy(false);
     setBusyAction(null);
     updateConversationQuery(null);
     return epochRef.current;
@@ -283,7 +476,7 @@ export function CoachAccountSessions() {
     detailRequestRef.current?.abort();
     const controller = registerRequest();
     detailRequestRef.current = controller;
-    setConversation(null);
+    setConversation((current) => current?.id === conversationId ? current : null);
     setDetailLoading(true);
     setMessageError("");
     try {
@@ -292,7 +485,46 @@ export function CoachAccountSessions() {
         { signal: controller.signal, accountId },
       );
       if (!isCurrentRequest() || controller.signal.aborted || response.conversation.id !== conversationId) return;
-      setConversation(response.conversation);
+      const restored = restoreUnsavedAssistantMessages(response.conversation, accountId, recoveryBufferRef.current);
+      const activeRun = activeRunRef.current;
+      setConversation((current) => {
+        if (current?.id !== conversationId) return restored.conversation;
+        const currentMessages = new Map(current.messages.map((message) => [message.id, message]));
+        return {
+          ...restored.conversation,
+          messages: restored.conversation.messages.map((message) => {
+            const localMessage = currentMessages.get(message.id);
+            const isCurrentRun = activeRun?.assistantMessageId === message.id
+              && activeRun.accountId === accountId
+              && activeRun.conversationId === conversationId;
+            if (message.role === "assistant"
+              && localMessage?.role === "assistant"
+              && localMessage.content.length > message.content.length
+              && localMessage.content.startsWith(message.content)
+              && (localMessage.contentPersisted === false || isCurrentRun)) {
+              return { ...message, content: localMessage.content, status: localMessage.status, contentPersisted: false };
+            }
+            return message;
+          }),
+        };
+      });
+      if (restored.recoveries.length > 0 && !restored.recoveries.some((recovery) => activeRun?.assistantMessageId === recovery.messageId)) {
+        const recovery = restored.recoveries.at(-1);
+        if (recovery) {
+          const restoredRetryMode: "same" | "new" = recovery.retryMode === "same"
+            && recovery.status !== "streaming"
+            && recovery.status !== "pending"
+            ? "same"
+            : recovery.retryMode === "same" ? "new" : recovery.retryMode;
+          setMessageDraft((current) => current || recovery.userContent);
+          pendingSubmissionRef.current = restoredRetryMode === "same"
+            ? { id: recovery.clientMessageId, conversationId, content: recovery.userContent }
+            : null;
+          setPendingRetry(true);
+          setRetryMode(restoredRetryMode);
+          setMessageError("已恢复本标签页中尚未确认写入 SQLite 的回复；你可以复制备份或重新发起助手运行。");
+        }
+      }
     } catch (cause) {
       if (isCurrentRequest() || (epoch === epochRef.current && accountRef.current?.id === accountId && cause instanceof AccountApiError && cause.status === 401)) {
         reportError(cause, epoch);
@@ -312,7 +544,9 @@ export function CoachAccountSessions() {
       setConversations(response.conversations);
       const requestedId = new URLSearchParams(window.location.search).get("conversation");
       const selectedId = response.conversations.find((item) => item.id === requestedId)?.id ?? response.conversations[0]?.id ?? null;
-      const conversationEpoch = activateConversation(selectedId);
+      const conversationEpoch = activeConversationIdRef.current === selectedId
+        ? conversationEpochRef.current
+        : activateConversation(selectedId);
       updateConversationQuery(selectedId);
       if (selectedId) void loadConversation(selectedId, epoch, accountId, conversationEpoch);
       else {
@@ -376,8 +610,10 @@ export function CoachAccountSessions() {
     const handleFocus = () => {
       if (document.visibilityState === "visible") void loadSession({ broadcastChange: true });
     };
+    const handlePageHide = () => persistActiveRunRecovery("interrupted", "new");
     channel?.addEventListener("message", handleChannelMessage);
     window.addEventListener("focus", handleFocus);
+    window.addEventListener("pagehide", handlePageHide);
     document.addEventListener("visibilitychange", handleFocus);
     void Promise.resolve().then(() => {
       if (active) void loadSession();
@@ -392,9 +628,10 @@ export function CoachAccountSessions() {
       channel?.close();
       if (accountChangeChannelRef.current === channel) accountChangeChannelRef.current = null;
       window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("pagehide", handlePageHide);
       document.removeEventListener("visibilitychange", handleFocus);
     };
-  }, [loadSession]);
+  }, [loadSession, persistActiveRunRecovery]);
 
   async function signInWithProvider(provider: SocialProvider) {
     if (!status?.providers[provider] || busyAction) return;
@@ -441,7 +678,52 @@ export function CoachAccountSessions() {
     }
   }
 
-  async function signOut() {
+  function requestDeparture(action: DepartureAction) {
+    const recoveries = collectCurrentRecoveries();
+    if (recoveries.length > 0) {
+      setPendingDeparture({ action, recoveries });
+      return;
+    }
+    continueDeparture(action);
+  }
+
+  function continueDeparture(action: DepartureAction) {
+    setPendingDeparture(null);
+    if (action.kind === "select-conversation") void selectConversationNow(action.conversationId);
+    else if (action.kind === "create-conversation") void createConversationNow(action.title);
+    else void performSignOut();
+  }
+
+  async function copyBackupAndContinue() {
+    const departure = pendingDeparture;
+    if (!departure || departureBusy) return;
+    setDepartureBusy(true);
+    try {
+      const recoveries = collectCurrentRecoveries();
+      const backup = recoveries.map((recovery) => recovery.content).join("\n\n---\n\n");
+      if (!backup || !await copyCodeText(backup)) {
+        setNotice("自动复制不可用；请先复制未保存回复，再选择放弃或留在当前会话。");
+        return;
+      }
+      setNotice("未保存回复已复制到剪贴板；此标签页仍保留按账号隔离的恢复缓冲。");
+      continueDeparture(departure.action);
+    } finally {
+      setDepartureBusy(false);
+    }
+  }
+
+  function abandonAndContinue() {
+    const departure = pendingDeparture;
+    if (!departure) return;
+    for (const recovery of collectCurrentRecoveries()) {
+      const key = unsavedRecoveryKey(recovery.accountId, recovery.conversationId, recovery.messageId);
+      discardedRecoveryKeysRef.current.add(key);
+      clearRecovery(recovery);
+    }
+    continueDeparture(departure.action);
+  }
+
+  async function performSignOut() {
     if (!account || busyAction) return;
     const authMethod = account.authMethod;
     const epoch = clearAccountData();
@@ -467,8 +749,18 @@ export function CoachAccountSessions() {
     }
   }
 
-  async function createConversation(event: React.FormEvent<HTMLFormElement>) {
+  function signOut() {
+    if (!account || busyAction) return;
+    requestDeparture({ kind: "sign-out" });
+  }
+
+  function createConversation(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!account || busyAction) return;
+    requestDeparture({ kind: "create-conversation", title: titleDraft.trim() || "新对话" });
+  }
+
+  async function createConversationNow(title: string) {
     if (!account || busyAction) return;
     const epoch = epochRef.current;
     const accountId = account.id;
@@ -484,7 +776,7 @@ export function CoachAccountSessions() {
     try {
       const response = await requestJson<{ conversation: ConversationSummary }>("/api/coach/conversations", {
         method: "POST",
-        body: { title: titleDraft.trim() || "新对话" },
+        body: { title },
         signal: controller.signal,
         accountId,
       });
@@ -521,8 +813,13 @@ export function CoachAccountSessions() {
     }
   }
 
-  async function selectConversation(conversationId: string) {
-    if (!account) return;
+  function selectConversation(conversationId: string) {
+    if (!account || conversationId === activeConversationIdRef.current) return;
+    requestDeparture({ kind: "select-conversation", conversationId });
+  }
+
+  async function selectConversationNow(conversationId: string) {
+    if (!account || conversationId === activeConversationIdRef.current) return;
     const epoch = epochRef.current;
     const conversationEpoch = activateConversation(conversationId);
     setMessageDraft("");
@@ -537,8 +834,8 @@ export function CoachAccountSessions() {
   async function copyUnsavedAssistantReply(content: string) {
     const copied = await copyCodeText(content);
     setNotice(copied
-      ? "未保存回复已复制；请先粘贴备份，再离开或刷新页面。"
-      : "自动复制不可用；请选中当前回复手动复制，离开或刷新前先备份。");
+      ? "未保存回复已复制；SQLite 尚未确认保存这段完整内容。"
+      : "自动复制不可用；请选中当前回复手动备份，SQLite 尚未确认保存这段完整内容。");
   }
 
   async function sendMessage(event?: React.FormEvent<HTMLFormElement>) {
@@ -641,7 +938,16 @@ export function CoachAccountSessions() {
           const userMessage = event.userMessage as ConversationMessage;
           const assistantMessage = event.assistantMessage as ConversationMessage;
           if (!runId || userMessage?.conversationId !== conversationId || assistantMessage?.conversationId !== conversationId) return;
-          activeRunRef.current = { runId, assistantMessageId: assistantMessage.id, conversationId, accountId: account.id, content: assistantMessage.content };
+          activeRunRef.current = {
+            runId,
+            assistantMessageId: assistantMessage.id,
+            conversationId,
+            accountId: account.id,
+            clientMessageId: submission.id,
+            userContent: submission.content,
+            content: assistantMessage.content,
+            createdAt: assistantMessage.createdAt,
+          };
           setActiveRunId(runId);
           setConversation((current) => upsertConversationMessages(current, conversationId, [userMessage, assistantMessage]));
           setConversations((current) => current.map((item) => item.id === conversationId ? { ...item, updatedAt: userMessage.createdAt } : item)
@@ -652,6 +958,18 @@ export function CoachAccountSessions() {
           const activeRun = activeRunRef.current;
           if (!activeRun || activeRun.runId !== event.runId || activeRun.conversationId !== conversationId) return;
           activeRun.content += event.text;
+          storeRecovery({
+            version: 1,
+            accountId: activeRun.accountId,
+            conversationId: activeRun.conversationId,
+            messageId: activeRun.assistantMessageId,
+            clientMessageId: activeRun.clientMessageId,
+            userContent: activeRun.userContent,
+            content: activeRun.content,
+            status: "streaming",
+            retryMode: "same",
+            createdAt: activeRun.createdAt,
+          });
           setConversation((current) => {
             if (!current || current.id !== conversationId) return current;
             return {
@@ -672,6 +990,26 @@ export function CoachAccountSessions() {
             ? "failed"
             : streamedStatus;
           sawTerminalEvent = true;
+          if (contentPersisted) {
+            clearRecovery({
+              accountId: activeRun.accountId,
+              conversationId: activeRun.conversationId,
+              messageId: activeRun.assistantMessageId,
+            });
+          } else {
+            storeRecovery({
+              version: 1,
+              accountId: activeRun.accountId,
+              conversationId: activeRun.conversationId,
+              messageId: activeRun.assistantMessageId,
+              clientMessageId: activeRun.clientMessageId,
+              userContent: activeRun.userContent,
+              content: activeRun.content,
+              status: terminalStatus,
+              retryMode: "new",
+              createdAt: activeRun.createdAt,
+            });
+          }
           setConversation((current) => {
             if (!current || current.id !== conversationId) return current;
             return {
@@ -690,7 +1028,7 @@ export function CoachAccountSessions() {
             pendingSubmissionRef.current = null;
             setPendingRetry(false);
             setRetryMode("same");
-            setMessageError("");
+          setMessageError("");
             setNotice("本机 Mock 演示已完成，用户消息和助手回复均已保存。");
           } else {
             pendingSubmissionRef.current = null;
@@ -715,6 +1053,7 @@ export function CoachAccountSessions() {
         if (cause instanceof AccountApiError && cause.status === 401) expireAccount();
         else if (cause instanceof AccountApiError && cause.status === 409 && cause.code === "account_changed") refreshAfterAccountMismatch();
         else if (isCurrentSubmission()) {
+          persistActiveRunRecovery("interrupted", "same");
           setPendingRetry(true);
           setRetryMode("same");
           setMessageError(cause instanceof Error ? cause.message : "暂时没有收到运行确认。重试会沿用同一运行键，避免重复调用助手。");
@@ -755,6 +1094,26 @@ export function CoachAccountSessions() {
         content: contentPersisted ? result.assistantMessage.content : activeRun.content,
         contentPersisted,
       };
+      if (contentPersisted) {
+        clearRecovery({
+          accountId: activeRun.accountId,
+          conversationId: activeRun.conversationId,
+          messageId: activeRun.assistantMessageId,
+        });
+      } else {
+        storeRecovery({
+          version: 1,
+          accountId: activeRun.accountId,
+          conversationId: activeRun.conversationId,
+          messageId: activeRun.assistantMessageId,
+          clientMessageId: activeRun.clientMessageId,
+          userContent: activeRun.userContent,
+          content: activeRun.content,
+          status: result.run.status,
+          retryMode: "new",
+          createdAt: activeRun.createdAt,
+        });
+      }
       setConversation((current) => upsertConversationMessages(current, activeRun.conversationId, [assistantMessage]));
       activeRunRef.current = null;
       setActiveRunId(null);
@@ -925,6 +1284,38 @@ export function CoachAccountSessions() {
         </Card>
       )}
 
+      {account && recoveryStorageError && (
+        <p className="coach-account-inline-error" role="alert" data-testid="recovery-storage-warning">
+          <AlertCircle size={15} aria-hidden="true" />
+          浏览器无法写入此标签页的恢复缓冲；请复制尚未保存的助手回复，或在离开前明确备份。
+        </p>
+      )}
+      <AlertDialog
+        open={pendingDeparture !== null}
+        onOpenChange={(open) => {
+          if (!open && !departureBusy) setPendingDeparture(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>助手回复尚未完整写入 SQLite</AlertDialogTitle>
+            <AlertDialogDescription>
+              当前会话有 {pendingDeparture?.recoveries.length ?? 0} 条未确认保存的助手回复。离开前可复制备份，或明确放弃；恢复缓冲按账号、会话和消息隔离。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button type="button" variant="outline" onClick={() => void copyBackupAndContinue()} disabled={departureBusy} data-testid="copy-backup-and-leave">
+              <Copy size={14} aria-hidden="true" />复制备份并继续
+            </Button>
+            <Button type="button" variant="destructive" onClick={abandonAndContinue} disabled={departureBusy} data-testid="abandon-unsaved-and-leave">
+              放弃未保存回复并继续
+            </Button>
+            <Button type="button" variant="ghost" onClick={() => setPendingDeparture(null)} disabled={departureBusy} data-testid="stay-in-conversation">
+              留在当前会话
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {error && <p className="coach-account-inline-error" role="alert"><AlertCircle size={15} aria-hidden="true" />{error}</p>}
       {notice && <p className="coach-account-inline-notice" role="status"><CheckCircle2 size={15} aria-hidden="true" />{notice}</p>}
       {status && <p className="coach-account-storage-note">旧版 IndexedDB 学习记录仍保留在本设备，本页不读取、导入或删除它。</p>}
