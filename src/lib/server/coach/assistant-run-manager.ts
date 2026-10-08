@@ -156,6 +156,7 @@ export class AssistantRunManager {
     activeRun: ActiveRun,
   ): Promise<RunCompletion> {
     let pendingContent = "";
+    let generatedContent = "";
     let status: TerminalRunStatus = "failed";
     let terminalError: string | undefined;
     let contentPersisted = true;
@@ -176,7 +177,7 @@ export class AssistantRunManager {
       if (!current || !["complete", "interrupted", "failed", "cancelled"].includes(current.run.status)) return false;
       status = current.run.status as TerminalRunStatus;
       terminalStatusPersisted = true;
-      contentPersisted = !pendingContent || current.assistantMessage.content.endsWith(pendingContent);
+      contentPersisted = current.assistantMessage.content === generatedContent;
       if (contentPersisted) pendingContent = "";
       return true;
     };
@@ -221,6 +222,7 @@ export class AssistantRunManager {
         if (typeof text !== "string" || !text) continue;
         totalLength += text.length;
         if (totalLength > 500_000) throw new Error("Assistant output exceeded the local limit.");
+        generatedContent += text;
         pendingContent += text;
         contentPersisted = false;
         activeRun.channel.push({ type: "delta", runId: input.runId, text });
@@ -235,7 +237,7 @@ export class AssistantRunManager {
         : undefined;
     } finally {
       try {
-        const written = this.service.finishAssistantRun(input.runId, status, pendingContent);
+        const written = this.service.finishAssistantRun(input.runId, status, pendingContent, generatedContent);
         if (written) {
           pendingContent = "";
           contentPersisted = true;
@@ -254,7 +256,7 @@ export class AssistantRunManager {
 
         if (!terminalStatusPersisted) {
           try {
-            if (this.service.finishAssistantRun(input.runId, fallbackStatus, pendingContent)) {
+            if (this.service.finishAssistantRun(input.runId, fallbackStatus, pendingContent, generatedContent)) {
               status = fallbackStatus;
               pendingContent = "";
               contentPersisted = true;
@@ -280,7 +282,7 @@ export class AssistantRunManager {
 
         if (!terminalStatusPersisted && !pendingContent) {
           try {
-            if (this.service.finishAssistantRun(input.runId, fallbackStatus)) {
+            if (this.service.finishAssistantRun(input.runId, fallbackStatus, "", generatedContent)) {
               status = fallbackStatus;
               terminalStatusPersisted = true;
             } else {

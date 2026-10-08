@@ -218,17 +218,25 @@ export class ConversationRepository {
     });
   }
 
-  finishAssistantRun(runId: string, status: Exclude<CoachAssistantRunStatus, "pending" | "streaming">, tail = "") {
+  finishAssistantRun(runId: string, status: Exclude<CoachAssistantRunStatus, "pending" | "streaming">, tail = "", expectedContent?: string) {
     return this.database.transaction((transaction) => {
       const [run] = transaction.select().from(coachAssistantRuns)
         .where(eq(coachAssistantRuns.id, runId)).limit(1).all();
       if (!run) return false;
-      if (!["pending", "streaming"].includes(run.status)) return run.status === status;
       const [message] = transaction.select({ content: coachMessages.content })
         .from(coachMessages).where(eq(coachMessages.id, run.assistantMessageId)).limit(1).all();
       if (!message) return false;
+      if (!["pending", "streaming"].includes(run.status)) {
+        if (run.status !== status) return false;
+        // A matching terminal status does not prove that this call's tail was saved.
+        return expectedContent === undefined
+          ? !tail || message.content.endsWith(tail)
+          : message.content === expectedContent;
+      }
       const now = new Date();
-      transaction.update(coachMessages).set({ content: message.content + tail, status })
+      const finalContent = message.content + tail;
+      if (expectedContent !== undefined && finalContent !== expectedContent) return false;
+      transaction.update(coachMessages).set({ content: finalContent, status })
         .where(eq(coachMessages.id, run.assistantMessageId)).run();
       transaction.update(coachAssistantRuns).set({ status, updatedAt: now })
         .where(eq(coachAssistantRuns.id, runId)).run();

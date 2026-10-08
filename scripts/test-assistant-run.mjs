@@ -148,6 +148,79 @@ try {
   assert.equal(service.find("user-a", doubleSubmitConversation.id).messages.length, 2, "one atomic user/assistant message pair is persisted");
   assert.equal(service.getAssistantRun("user-b", doubleSubmitConversation.id, duplicate.run.id), null, "another account cannot read the run");
 
+  const terminalTailConversation = conversation(service, "terminal-tail-idempotency");
+  const terminalTailCreated = service.createAssistantRun("user-a", terminalTailConversation.id, {
+    clientRunId: "terminal-tail-idempotency-key",
+    content: "Check terminal-tail idempotency.",
+  });
+  assert.equal(terminalTailCreated.kind, "created");
+  service.beginAssistantRun(terminalTailCreated.run.id);
+  assert.equal(service.finishAssistantRun(terminalTailCreated.run.id, "complete", "already saved tail"), true);
+  assert.equal(service.finishAssistantRun(terminalTailCreated.run.id, "complete", "already saved tail", "already saved tail"), true, "a repeated same-status finish confirms the exact expected content");
+  assert.equal(service.finishAssistantRun(terminalTailCreated.run.id, "complete"), true, "an empty-tail same-status finish remains idempotent");
+  assert.equal(service.finishAssistantRun(terminalTailCreated.run.id, "complete", "already saved tail", "different expected content"), false, "a matching suffix cannot confirm a different full content version");
+  assert.equal(service.getAssistantRun("user-a", terminalTailConversation.id, terminalTailCreated.run.id).assistantMessage.content, "already saved tail", "idempotent finish does not append the same tail twice");
+
+  const activeContentVersionConversation = conversation(service, "active-content-version");
+  const activeContentVersionCreated = service.createAssistantRun("user-a", activeContentVersionConversation.id, {
+    clientRunId: "active-content-version-key",
+    content: "Verify the active content version.",
+  });
+  assert.equal(activeContentVersionCreated.kind, "created");
+  service.beginAssistantRun(activeContentVersionCreated.run.id);
+  assert.equal(service.appendAssistantRunContent(activeContentVersionCreated.run.id, "saved-prefix"), true);
+  assert.equal(service.finishAssistantRun(activeContentVersionCreated.run.id, "complete", "tail", "wrong expected version"), false, "an active finish rejects content inconsistent with the full expected version");
+  assert.equal(service.getAssistantRun("user-a", activeContentVersionConversation.id, activeContentVersionCreated.run.id).assistantMessage.content, "saved-prefix", "a rejected active version does not write the tail");
+  assert.equal(service.finishAssistantRun(activeContentVersionCreated.run.id, "complete", "tail", "saved-prefixtail"), true, "the matching full version can then be finished atomically");
+
+  const missingTerminalTailConversation = conversation(service, "terminal-tail-missing");
+  const missingTerminalTailCreated = service.createAssistantRun("user-a", missingTerminalTailConversation.id, {
+    clientRunId: "terminal-tail-missing-key",
+    content: "Reject an unpersisted terminal tail.",
+  });
+  assert.equal(missingTerminalTailCreated.kind, "created");
+  service.beginAssistantRun(missingTerminalTailCreated.run.id);
+  assert.equal(service.finishAssistantRun(missingTerminalTailCreated.run.id, "complete"), true);
+  assert.equal(service.finishAssistantRun(missingTerminalTailCreated.run.id, "complete", "tail never written", "tail never written"), false, "matching terminal status alone does not confirm a new tail");
+  assert.equal(service.getAssistantRun("user-a", missingTerminalTailConversation.id, missingTerminalTailCreated.run.id).assistantMessage.content, "", "rejected tail confirmation leaves the stored message unchanged");
+
+  const managerTailRaceConversation = conversation(service, "manager-terminal-tail-race");
+  let releaseManagerTail;
+  const managerTailGate = new Promise((resolve) => { releaseManagerTail = resolve; });
+  let announceProviderStart;
+  const managerProviderStarted = new Promise((resolve) => { announceProviderStart = resolve; });
+  const managerPersistedPrefix = "x".repeat(260) + "duplicate-tail";
+  const managerTail = "duplicate-tail";
+  const managerTailRaceProvider = createProvider(async function* () {
+    announceProviderStart();
+    yield managerPersistedPrefix;
+    await managerTailGate;
+    yield managerTail;
+  });
+  const managerTailRaceManager = new AssistantRunManager(service);
+  const managerTailRaceHandlers = makeHandlers(service, managerTailRaceProvider, managerTailRaceManager);
+  const managerTailRaceResponse = await managerTailRaceHandlers.create(
+    makeRequest("user-a", "POST", "/runs", { clientRunId: "manager-terminal-tail-race-key", content: "Race a terminal write against the final tail." }),
+    context(managerTailRaceConversation.id),
+  );
+  const managerTailRaceReader = managerTailRaceResponse.body.getReader();
+  const managerTailRaceStart = await readEvent(managerTailRaceReader);
+  await managerProviderStarted;
+  const managerPersistedPrefixDelta = await readEvent(managerTailRaceReader);
+  assert.equal(managerPersistedPrefixDelta.text, managerPersistedPrefix);
+  assert.equal(service.getAssistantRun("user-a", managerTailRaceConversation.id, managerTailRaceStart.runId).assistantMessage.content, managerPersistedPrefix, "the first chunk is committed before the terminal race");
+  assert.equal(service.finishAssistantRun(managerTailRaceStart.runId, "complete"), true, "simulate another terminal write before the provider tail arrives");
+  releaseManagerTail();
+  const managerTailDelta = await readEvent(managerTailRaceReader);
+  assert.equal(managerTailDelta.text, managerTail);
+  const managerTailTerminal = await readEvent(managerTailRaceReader);
+  assert.equal(managerTailTerminal.status, "failed", "an unpersisted final tail downgrades the manager result instead of reporting completion");
+  assert.equal(managerTailTerminal.contentPersisted, false, "the manager does not accept the matching terminal status as proof that the tail was saved");
+  assert.equal(managerTailTerminal.terminalStatusPersisted, true, "the earlier terminal state is accurately distinguished from the missing tail");
+  assert.equal(managerTailTerminal.error, "assistant_content_not_saved");
+  const managerTailRaceRun = service.getAssistantRun("user-a", managerTailRaceConversation.id, managerTailRaceStart.runId);
+  assert.equal(managerTailRaceRun.assistantMessage.content, managerPersistedPrefix, "the client-visible suffix is not confused with the identical persisted suffix");
+
   const disconnectConversation = conversation(service, "disconnect");
   const partial = "saved-partial-".repeat(30);
   const disconnectProvider = createProvider(async function* ({ signal }) {
@@ -390,7 +463,7 @@ try {
   assert.equal(restored.assistantMessage.status, "interrupted");
   assert.equal(restored.assistantMessage.content, "persist this partial reply", "restart recovery preserves the last committed partial content");
 
-  process.stdout.write("assistant run: fail-closed provider, atomic/idempotent creation, disconnect/cancel, cancel-write failure, content-tail recovery, terminal persistence signals, prefetched rejection handling, owner isolation, unknown qid preservation, and restart recovery passed\n");
+  process.stdout.write("assistant run: fail-closed provider, atomic/idempotent creation, terminal-tail/full-content verification, disconnect/cancel, write-failure recovery, persistence signals, prefetched rejection handling, owner isolation, unknown qid preservation, and restart recovery passed\n");
 } finally {
   try { opened?.client.close(); } catch { /* already closed during restart check */ }
   rmSync(tempRoot, { recursive: true, force: true });

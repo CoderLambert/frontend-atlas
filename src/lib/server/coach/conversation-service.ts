@@ -83,8 +83,8 @@ export class ConversationService {
     return this.repository.appendAssistantRunContent(runId, content);
   }
 
-  finishAssistantRun(runId: string, status: Exclude<CoachAssistantRunStatus, "pending" | "streaming">, tail = "") {
-    return this.repository.finishAssistantRun(runId, status, tail);
+  finishAssistantRun(runId: string, status: Exclude<CoachAssistantRunStatus, "pending" | "streaming">, tail = "", expectedContent?: string) {
+    return this.repository.finishAssistantRun(runId, status, tail, expectedContent);
   }
 
   cancelAssistantRun(runId: string) {
