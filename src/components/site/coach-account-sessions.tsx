@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, Copy, DatabaseBackup, LoaderCircle, LogIn, LogOut, MessageSquareText, Plus, RefreshCw, Send, Square, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -1329,7 +1330,14 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
           <div><strong>站点账号与模型连接是两件事</strong><p>{status?.assistantProvider === "local-mock"
             ? "仅 local:dev 本机启用 Mock 流式演示；它不会连接真实模型，也不会复用本机 SIWC 凭据。"
             : "AI 未连接。此页面不会伪造助手回复；你仍可保存纯文本消息，但不会收到助手回复。"}</p></div>
-          <Badge variant="outline">{status?.assistantProvider === "local-mock" ? "明确标记的 Mock 回复" : "未连接"}</Badge>
+          <div className="coach-account-model-actions">
+            <Badge variant="outline">{status?.assistantProvider === "local-mock" ? "明确标记的 Mock 回复" : "未连接"}</Badge>
+            <Button asChild variant="outline" size="sm">
+              <Link href="/coach/" prefetch={false} data-testid="chatgpt-coach-entry">
+                <ArrowUpRight size={14} aria-hidden="true" />前往 ChatGPT 连接入口
+              </Link>
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
