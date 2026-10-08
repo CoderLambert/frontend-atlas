@@ -25,6 +25,11 @@ const coachRouteHtml = await readFile(coachRoute, "utf8").catch(() => "");
 assert.match(coachRouteHtml, /404: This page could not be found\./u, "The local-only coach route must remain a 404 in static export.");
 assert.doesNotMatch(coachRouteHtml, /Continue with ChatGPT|AI 答题教练|练习反馈/u, "The static coach route must not render the local interactive UI.");
 
+const coachSessionsRoute = path.join(outputRoot, "coach", "sessions", "index.html");
+const coachSessionsRouteHtml = await readFile(coachSessionsRoute, "utf8").catch(() => "");
+assert.match(coachSessionsRouteHtml, /404: This page could not be found\./u, "The server-saved account sessions route must remain a 404 in static export.");
+assert.doesNotMatch(coachSessionsRouteHtml, /连接知序站点账号|新建会话标题|发送一条用户消息|还没有账号会话/u, "The static site must not render the server-backed account UI.");
+
 const aiGuideRoute = path.join(outputRoot, "ai-assist", "index.html");
 const aiGuideHtml = await readFile(aiGuideRoute, "utf8").catch(() => "");
 assert.match(aiGuideHtml, /AI 辅助练习/u, "The static site must expose the AI setup guide.");

@@ -26,3 +26,10 @@ export const auth = authSecret && authBaseUrl ? betterAuth({
       ...(googleClientId && googleClientSecret ? { google: { clientId: googleClientId, clientSecret: googleClientSecret } } : {}),
     },
   }) : null;
+
+export const configuredSocialProviders = {
+  github: Boolean(auth && githubClientId && githubClientSecret),
+  google: Boolean(auth && googleClientId && googleClientSecret),
+} as const;
+
+export const authServerConfigured = Boolean(auth);

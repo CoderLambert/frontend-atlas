@@ -17,6 +17,8 @@ const databasePath = join(tempRoot, "coach.sqlite");
 function request(user, method, path, payload, options = {}) {
   const headers = new Headers();
   if (user) headers.set("cookie", `session=${user}`);
+  const expectedAccountId = options.expectedAccountId === undefined ? user : options.expectedAccountId;
+  if (expectedAccountId) headers.set("x-frontend-atlas-account-id", expectedAccountId);
   if (options.origin !== null) headers.set("origin", options.origin ?? "http://localhost");
   if (payload !== undefined && options.contentType !== null) {
     headers.set("content-type", options.contentType ?? "application/json");
@@ -61,6 +63,11 @@ try {
   assert.equal((await handlers.list(request(null, "GET", "/api/coach/conversations"))).status, 401, "unauthenticated requests are rejected");
 
   const conversationCountBeforeGuardChecks = client.prepare("SELECT count(*) AS count FROM coach_conversations").get().count;
+  const mismatchedAccountWrite = await handlers.create(request("user-a", "POST", "/api/coach/conversations", { title: "must-not-use-b" }, { expectedAccountId: "user-b" }));
+  assert.equal(mismatchedAccountWrite.status, 409, "a write is rejected when the UI identity differs from the verified session");
+  assert.deepEqual(await mismatchedAccountWrite.json(), { error: "account_changed" });
+  assert.equal(client.prepare("SELECT count(*) AS count FROM coach_conversations").get().count, conversationCountBeforeGuardChecks, "an account mismatch has no persistence side effect");
+
   const deniedWrites = [
     [request("user-a", "POST", "/api/coach/conversations", { title: "blocked" }, { origin: "https://evil.example", contentType: "text/plain" }), 403, "external Origin with text/plain is rejected"],
     [request("user-a", "POST", "/api/coach/conversations", { title: "blocked" }, { origin: "https://evil.example" }), 403, "malicious Origin is rejected"],

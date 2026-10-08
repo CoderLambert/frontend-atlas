@@ -21,6 +21,16 @@ async function readObject(request: Request): Promise<Record<string, unknown> | n
   }
 }
 
+function expectedAccountMatches(request: Request, authenticatedUserId: string) {
+  const expectedAccountId = request.headers.get("x-frontend-atlas-account-id");
+  // This is only a stale-tab consistency check; the authenticated session above remains the owner authority.
+  return expectedAccountId === authenticatedUserId;
+}
+
+function accountChanged() {
+  return json({ error: "account_changed" }, 409);
+}
+
 export function createCoachConversationHandlers(
   service: ConversationService,
   sessions: SessionReader,
@@ -39,6 +49,7 @@ export function createCoachConversationHandlers(
     async list(request: Request) {
       const ownerUserId = await userId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
+      if (!expectedAccountMatches(request, ownerUserId)) return accountChanged();
       return json({ conversations: await service.list(ownerUserId) });
     },
 
@@ -47,6 +58,7 @@ export function createCoachConversationHandlers(
       if (blocked) return blocked;
       const ownerUserId = await userId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
+      if (!expectedAccountMatches(request, ownerUserId)) return accountChanged();
       const body = await readObject(request);
       if (!body) return json({ error: "invalid_request" }, 400);
       const result = await service.create(ownerUserId, body);
@@ -58,6 +70,7 @@ export function createCoachConversationHandlers(
     async read(request: Request, context: HandlerContext) {
       const ownerUserId = await userId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
+      if (!expectedAccountMatches(request, ownerUserId)) return accountChanged();
       const { conversationId } = await context.params;
       const conversation = await service.find(ownerUserId, conversationId);
       return conversation ? json({ conversation }) : json({ error: "not_found" }, 404);
@@ -68,6 +81,7 @@ export function createCoachConversationHandlers(
       if (blocked) return blocked;
       const ownerUserId = await userId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
+      if (!expectedAccountMatches(request, ownerUserId)) return accountChanged();
       const { conversationId } = await context.params;
       const deleted = await service.delete(ownerUserId, conversationId);
       return deleted ? json({ deleted: true }) : json({ error: "not_found" }, 404);
@@ -78,6 +92,7 @@ export function createCoachConversationHandlers(
       if (blocked) return blocked;
       const ownerUserId = await userId(request);
       if (!ownerUserId) return json({ error: "unauthorized" }, 401);
+      if (!expectedAccountMatches(request, ownerUserId)) return accountChanged();
       const { conversationId } = await context.params;
       const body = await readObject(request);
       if (!body) return json({ error: "invalid_request" }, 400);

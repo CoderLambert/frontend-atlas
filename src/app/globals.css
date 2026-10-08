@@ -705,8 +705,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .code-copy-feedback { max-width: 12rem; }
 }
 @media (max-width: 767px) {
-  .app-frame.has-local-coach .mobile-nav { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .app-frame.has-local-coach .mobile-nav-link { font-size: .62rem; }
+  .app-frame.has-local-coach .mobile-nav { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .app-frame.has-local-coach .mobile-nav-link { font-size: .58rem; }
 }
 @media (max-width: 560px) {
   .answer-entry-toolbar { align-items: flex-start; flex-direction: column; gap: .25rem; }
@@ -718,4 +718,71 @@ button, a { -webkit-tap-highlight-color: transparent; }
 @media (max-width: 760px) {
   .answer-editor-content.answer-view-split { grid-template-columns: minmax(0, 1fr); }
   .answer-input, .answer-markdown-preview { height: clamp(22rem, 58vh, 34rem); min-height: 22rem; }
+}
+
+/* Authenticated server-saved conversation slice. */
+.coach-account-page { display: grid; min-width: 0; gap: 1rem; }
+.coach-account-model-notice, .coach-account-identity, .coach-account-session-list-card, .coach-account-session-detail, .coach-account-login-card { gap: 0; padding: 0; }
+.coach-account-model-notice > [data-slot="card-content"] { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding-top: .9rem; padding-bottom: .9rem; }
+.coach-account-model-notice strong { color: #29483a; font-family: var(--font-serif); font-size: .95rem; }
+.coach-account-model-notice p { margin: .2rem 0 0; color: #68786e; font-size: .8rem; line-height: 1.6; }
+.coach-account-loading { display: flex; align-items: center; gap: .6rem; padding-top: 1.1rem; padding-bottom: 1.1rem; color: #697970; font-size: .85rem; }
+.coach-account-signed-in { display: grid; gap: 1rem; }
+.coach-account-identity > [data-slot="card-content"] { display: flex; min-width: 0; align-items: center; gap: .8rem; padding-top: .9rem; padding-bottom: .9rem; }
+.coach-account-identity-icon { display: grid; width: 2.55rem; height: 2.55rem; flex: 0 0 auto; place-items: center; border: 1px solid #c7dccb; border-radius: .8rem; background: #e9f2e9; color: #285347; }
+.coach-account-identity-copy { display: grid; min-width: 0; flex: 1 1 auto; gap: .12rem; }
+.coach-account-identity-copy > [data-slot="badge"] { width: fit-content; gap: .3rem; }
+.coach-account-identity-copy > strong { overflow: hidden; color: #2b4337; font-size: .96rem; text-overflow: ellipsis; white-space: nowrap; }
+.coach-account-identity-copy > span { overflow: hidden; color: #738078; font-size: .75rem; text-overflow: ellipsis; white-space: nowrap; }
+.coach-account-session-layout { display: grid; min-width: 0; grid-template-columns: minmax(16rem, .72fr) minmax(0, 1.28fr); align-items: start; gap: 1rem; }
+.coach-account-session-list-card > [data-slot="card-header"], .coach-account-session-detail > [data-slot="card-header"], .coach-account-login-card > [data-slot="card-header"] { display: flex; align-items: flex-start; justify-content: space-between; gap: .65rem; padding: 1rem 1.1rem .75rem; }
+.coach-account-session-list-card [data-slot="card-title"], .coach-account-session-detail [data-slot="card-title"], .coach-account-login-card [data-slot="card-title"] { display: flex; align-items: center; gap: .45rem; color: #2c5142; font-family: var(--font-serif); font-size: 1rem; font-weight: 650; }
+.coach-account-session-list-card [data-slot="card-header"] p, .coach-account-session-detail [data-slot="card-header"] p, .coach-account-login-card [data-slot="card-header"] p { margin: .18rem 0 0; color: #708078; font-size: .76rem; line-height: 1.55; }
+.coach-account-session-list-card > [data-slot="card-content"], .coach-account-session-detail > [data-slot="card-content"], .coach-account-login-card > [data-slot="card-content"] { display: grid; min-width: 0; gap: .85rem; padding-bottom: 1rem; }
+.coach-account-new-session { display: grid; gap: .38rem; border-bottom: 1px solid #e7ebe6; padding-bottom: .8rem; }
+.coach-account-new-session > label, .coach-account-composer > label { color: #455a4f; font-size: .79rem; font-weight: 650; }
+.coach-account-new-session > div { display: flex; min-width: 0; gap: .4rem; }
+.coach-account-new-session input { min-width: 0; flex: 1 1 auto; }
+.coach-account-session-list { display: grid; max-height: 29rem; overflow: auto; gap: .4rem; margin: 0; padding: 0; list-style: none; }
+.coach-account-session-list button { display: flex; width: 100%; min-height: 3.6rem; align-items: center; justify-content: space-between; gap: .6rem; border: 1px solid #e2e8e2; border-radius: .7rem; background: #fff; padding: .55rem .65rem .55rem .75rem; color: #45594e; text-align: left; cursor: pointer; }
+.coach-account-session-list button:hover { border-color: #b9cdbd; background: #f7faf6; }
+.coach-account-session-list button.is-active { border-color: #aec8b5; background: #eef5ed; color: #234a3b; }
+.coach-account-session-list button > span { display: grid; min-width: 0; gap: .18rem; }
+.coach-account-session-list button strong { overflow: hidden; font-size: .82rem; text-overflow: ellipsis; white-space: nowrap; }
+.coach-account-session-list button small { display: flex; align-items: center; gap: .3rem; color: #77847c; font-size: .68rem; }
+.coach-account-session-list button > svg { flex: 0 0 auto; color: #75847b; }
+.coach-account-muted, .coach-account-empty { margin: 0; border: 1px dashed #d7e0d8; border-radius: .7rem; background: #fafbf8; padding: .75rem; color: #738078; font-size: .78rem; line-height: 1.6; }
+.coach-account-session-detail { min-height: 20rem; }
+.coach-account-messages { display: grid; min-width: 0; gap: .65rem; margin: 0; padding: 0; list-style: none; }
+.coach-account-messages > li:not(.coach-account-empty-message) { display: grid; gap: .35rem; border: 1px solid #dfe7df; border-radius: .75rem; background: #f7faf6; padding: .75rem .85rem; }
+.coach-account-messages > li > span { color: #456555; font-size: .72rem; font-weight: 700; }
+.coach-account-messages > li > p { margin: 0; color: #33483c; font-size: .87rem; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.coach-account-messages > li > time { color: #829087; font-size: .68rem; }
+.coach-account-empty-message { border: 1px dashed #d7e0d8; border-radius: .7rem; padding: .7rem; color: #77847c; font-size: .77rem; }
+.coach-account-composer { display: grid; gap: .45rem; border-top: 1px solid #e6ebe6; padding-top: .85rem; }
+.coach-account-composer textarea { min-height: 7.5rem; resize: vertical; background: #fff; line-height: 1.7; }
+.coach-account-composer-footer { display: flex; align-items: center; justify-content: space-between; gap: .6rem; color: #7a877f; font-size: .7rem; }
+.coach-account-inline-error, .coach-account-inline-notice { display: flex; align-items: flex-start; gap: .4rem; margin: 0; color: #9b4038; font-size: .78rem; line-height: 1.55; }
+.coach-account-inline-error svg, .coach-account-inline-notice svg { flex: 0 0 auto; margin-top: .1rem; }
+.coach-account-inline-notice { color: #35614f; }
+.coach-account-provider-grid { display: grid; gap: .55rem; }
+.coach-account-provider-row { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: .7rem; border: 1px solid #e3e9e3; border-radius: .75rem; background: #fbfcfa; padding: .65rem .75rem; }
+.coach-account-provider-row > div { display: grid; gap: .12rem; }
+.coach-account-provider-row strong { color: #344c3e; font-size: .84rem; }
+.coach-account-provider-row span { color: #77847c; font-size: .71rem; }
+.coach-account-setup-note { margin: 0; border-left: 3px solid #b5c9b8; background: #f1f5ef; padding: .55rem .7rem; color: #63736a; font-size: .76rem; line-height: 1.6; }
+.coach-account-mock-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; border-top: 1px solid #e6ebe6; padding-top: .8rem; }
+.coach-account-mock-tools > p { flex-basis: 100%; margin: 0; color: #7a877f; font-size: .7rem; }
+.coach-account-storage-note { margin: 0; color: #78847d; font-size: .73rem; text-align: center; }
+@media (max-width: 860px) {
+  .coach-account-session-layout { grid-template-columns: minmax(0, 1fr); }
+  .coach-account-session-list { max-height: 15rem; }
+}
+@media (max-width: 680px) {
+  .coach-account-model-notice > [data-slot="card-content"] { align-items: flex-start; flex-direction: column; }
+  .coach-account-identity > [data-slot="card-content"] { align-items: flex-start; flex-wrap: wrap; }
+  .coach-account-identity-copy { flex-basis: calc(100% - 3.5rem); }
+  .coach-account-identity > [data-slot="card-content"] > button { width: 100%; }
+  .coach-account-provider-row { align-items: flex-start; flex-direction: column; }
+  .coach-account-provider-row > button { width: 100%; }
 }
