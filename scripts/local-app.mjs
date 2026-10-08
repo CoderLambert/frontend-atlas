@@ -18,6 +18,8 @@ const env = {
   NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE: "1",
   NEXT_TELEMETRY_DISABLED: "1",
 };
+if (mode === "dev") env.FRONTEND_ATLAS_MOCK_ASSISTANT = "1";
+else delete env.FRONTEND_ATLAS_MOCK_ASSISTANT;
 const node = process.execPath;
 const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const localServer = path.join(root, "server", "index.mjs");

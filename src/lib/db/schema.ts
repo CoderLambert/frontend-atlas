@@ -6,6 +6,7 @@ export { account, session, user, verification };
 
 export type CoachMessageStatus = "pending" | "streaming" | "complete" | "interrupted" | "failed" | "cancelled";
 export type CoachMessageRole = "user" | "assistant";
+export type CoachAssistantRunStatus = CoachMessageStatus;
 
 export const coachConversations = sqliteTable("coach_conversations", {
   id: text("id").primaryKey(),
@@ -38,7 +39,39 @@ export const coachMessages = sqliteTable("coach_messages", {
   unique("coach_messages_owner_client_id_unique").on(table.ownerUserId, table.clientMessageId),
   check("coach_messages_role_check", sql`${table.role} in ('user', 'assistant')`),
   check("coach_messages_status_check", sql`${table.status} in ('pending', 'streaming', 'complete', 'interrupted', 'failed', 'cancelled')`),
+  unique("coach_messages_owner_conversation_id_unique").on(table.ownerUserId, table.conversationId, table.id),
   index("coach_messages_owner_conversation_created_idx").on(table.ownerUserId, table.conversationId, table.createdAt),
+]);
+
+export const coachAssistantRuns = sqliteTable("coach_assistant_runs", {
+  id: text("id").primaryKey(),
+  ownerUserId: text("owner_user_id").notNull(),
+  conversationId: text("conversation_id").notNull(),
+  clientRunId: text("client_run_id").notNull(),
+  userMessageId: text("user_message_id").notNull(),
+  assistantMessageId: text("assistant_message_id").notNull(),
+  status: text("status").$type<CoachAssistantRunStatus>().notNull().default("pending"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  foreignKey({
+    name: "coach_assistant_runs_owner_conversation_fk",
+    columns: [table.ownerUserId, table.conversationId],
+    foreignColumns: [coachConversations.ownerUserId, coachConversations.id],
+  }).onDelete("cascade"),
+  foreignKey({
+    name: "coach_assistant_runs_user_message_fk",
+    columns: [table.ownerUserId, table.conversationId, table.userMessageId],
+    foreignColumns: [coachMessages.ownerUserId, coachMessages.conversationId, coachMessages.id],
+  }).onDelete("cascade"),
+  foreignKey({
+    name: "coach_assistant_runs_assistant_message_fk",
+    columns: [table.ownerUserId, table.conversationId, table.assistantMessageId],
+    foreignColumns: [coachMessages.ownerUserId, coachMessages.conversationId, coachMessages.id],
+  }).onDelete("cascade"),
+  unique("coach_assistant_runs_owner_client_id_unique").on(table.ownerUserId, table.clientRunId),
+  index("coach_assistant_runs_owner_conversation_created_idx").on(table.ownerUserId, table.conversationId, table.createdAt),
+  check("coach_assistant_runs_status_check", sql`${table.status} in ('pending', 'streaming', 'complete', 'interrupted', 'failed', 'cancelled')`),
 ]);
 
 export const coachConversationsRelations = relations(coachConversations, ({ many, one }) => ({

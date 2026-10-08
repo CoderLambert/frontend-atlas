@@ -1,4 +1,5 @@
 import type { ConversationRepository } from "./conversation-repository.ts";
+import type { CoachAssistantRunStatus } from "../../db/schema.ts";
 
 export type ConversationInput = {
   title?: unknown;
@@ -16,6 +17,7 @@ export class ConversationService {
 
   constructor(repository: ConversationRepository) {
     this.repository = repository;
+    this.repository.interruptUnfinishedAssistantRuns();
   }
 
   list(ownerUserId: string) {
@@ -54,6 +56,39 @@ export class ConversationService {
       clientMessageId: input.clientMessageId,
       content: input.content,
     });
+  }
+
+  createAssistantRun(ownerUserId: string, conversationId: string, input: { clientRunId?: unknown; content?: unknown }) {
+    if (typeof input.clientRunId !== "string" || !input.clientRunId.trim() || input.clientRunId.length > 128) {
+      return { kind: "invalid" as const };
+    }
+    if (typeof input.content !== "string" || !input.content.trim() || input.content.length > 500_000) {
+      return { kind: "invalid" as const };
+    }
+    return this.repository.createAssistantRun(ownerUserId, conversationId, {
+      clientRunId: input.clientRunId,
+      content: input.content,
+    });
+  }
+
+  getAssistantRun(ownerUserId: string, conversationId: string, runId: string) {
+    return this.repository.getAssistantRunForOwner(ownerUserId, conversationId, runId);
+  }
+
+  beginAssistantRun(runId: string) {
+    return this.repository.beginAssistantRun(runId);
+  }
+
+  appendAssistantRunContent(runId: string, content: string) {
+    return this.repository.appendAssistantRunContent(runId, content);
+  }
+
+  finishAssistantRun(runId: string, status: Exclude<CoachAssistantRunStatus, "pending" | "streaming">, tail = "") {
+    return this.repository.finishAssistantRun(runId, status, tail);
+  }
+
+  cancelAssistantRun(runId: string) {
+    return this.repository.cancelAssistantRun(runId);
   }
 }
 

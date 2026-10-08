@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { user } from "@/lib/db/schema";
 import { authSessionReader } from "@/lib/server/auth-session";
 import { isMockAuthUser, isMockAuthEnabled } from "@/lib/server/mock-auth";
+import { isMockAssistantEnabled } from "@/lib/server/coach/assistant-provider";
 
 export const runtime = "nodejs";
 
@@ -22,5 +23,6 @@ export async function GET(request: Request) {
     providers: configuredSocialProviders,
     account: account ? { ...account, authMethod: isMockAuthUser(request, account.id) ? "mock" : "oauth" } : null,
     mockAuthEnabled: isMockAuthEnabled(request),
+    assistantProvider: isMockAssistantEnabled(request) ? "local-mock" : "unavailable",
   });
 }

@@ -1,13 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, LoaderCircle, LogIn, LogOut, MessageSquareText, Plus, RefreshCw, Send, UserRound } from "lucide-react";
+import dynamic from "next/dynamic";
+import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, Copy, LoaderCircle, LogIn, LogOut, MessageSquareText, Plus, RefreshCw, Send, Square, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { copyCodeText } from "@/lib/copy-code.mjs";
+
+const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
+  loading: () => <p className="coach-markdown-loading">正在准备回复排版…</p>,
+});
 
 type SocialProvider = "github" | "google";
 type SiteAccount = { id: string; name: string; email: string; authMethod: "mock" | "oauth" };
@@ -16,6 +22,7 @@ type SiteAccountStatus = {
   providers: Record<SocialProvider, boolean>;
   account: SiteAccount | null;
   mockAuthEnabled: boolean;
+  assistantProvider: "local-mock" | "unavailable";
 };
 type ConversationSummary = {
   id: string;
@@ -31,12 +38,24 @@ type ConversationMessage = {
   clientMessageId: string;
   role: "user" | "assistant";
   content: string;
-  status: string;
+  status: "pending" | "streaming" | "complete" | "interrupted" | "failed" | "cancelled";
+  contentPersisted?: boolean;
   createdAt: string;
 };
 type ConversationDetail = ConversationSummary & { messages: ConversationMessage[] };
 type PendingSubmission = { id: string; conversationId: string; content: string };
 type LoadSessionOptions = { broadcastChange?: boolean };
+
+function upsertConversationMessages(current: ConversationDetail | null, conversationId: string, incoming: ConversationMessage[]) {
+  if (!current || current.id !== conversationId) return current;
+  const messages = [...current.messages];
+  for (const message of incoming) {
+    const index = messages.findIndex((candidate) => candidate.id === message.id);
+    if (index < 0) messages.push(message);
+    else messages[index] = { ...messages[index], ...message };
+  }
+  return { ...current, messages };
+}
 
 const requestHeaderName = "x-frontend-atlas-request";
 const requestHeaderValue = "1";
@@ -89,6 +108,42 @@ function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError";
 }
 
+function messageStatusLabel(message: ConversationMessage) {
+  if (message.role === "user") return "我";
+  if (message.contentPersisted === false) return "助手 · 回复尚未保存";
+  if (message.status === "pending" || message.status === "streaming") return "助手 · 正在生成";
+  if (message.status === "interrupted") return "助手 · 已中断，保留部分内容";
+  if (message.status === "failed") return "助手 · 运行失败，保留已保存内容";
+  if (message.status === "cancelled") return "助手 · 已停止，保留部分内容";
+  return "助手";
+}
+
+async function readAssistantStream(response: Response, onEvent: (event: Record<string, unknown>) => void) {
+  if (!response.body) throw new Error("助手流没有返回可读取的数据。");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const parseLine = (line: string) => {
+    const normalized = line.trim();
+    if (!normalized) return;
+    const event: unknown = JSON.parse(normalized);
+    if (!event || typeof event !== "object" || Array.isArray(event)) throw new Error("助手流返回了无效事件。");
+    onEvent(event as Record<string, unknown>);
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+    let newline = buffer.indexOf("\n");
+    while (newline >= 0) {
+      parseLine(buffer.slice(0, newline));
+      buffer = buffer.slice(newline + 1);
+      newline = buffer.indexOf("\n");
+    }
+    if (done) break;
+  }
+  parseLine(buffer);
+}
+
 export function CoachAccountSessions() {
   const [status, setStatus] = useState<SiteAccountStatus | null>(null);
   const [account, setAccount] = useState<SiteAccount | null>(null);
@@ -101,6 +156,8 @@ export function CoachAccountSessions() {
   const [messageDraft, setMessageDraft] = useState("");
   const [messageBusy, setMessageBusy] = useState(false);
   const [pendingRetry, setPendingRetry] = useState(false);
+  const [retryMode, setRetryMode] = useState<"same" | "new">("same");
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<"login" | "logout" | "create" | null>(null);
   const [error, setError] = useState("");
   const [messageError, setMessageError] = useState("");
@@ -114,6 +171,7 @@ export function CoachAccountSessions() {
   const requestsRef = useRef(new Set<AbortController>());
   const detailRequestRef = useRef<AbortController | null>(null);
   const messageRequestRef = useRef<AbortController | null>(null);
+  const activeRunRef = useRef<{ runId: string; assistantMessageId: string; conversationId: string; accountId: string; content: string } | null>(null);
   const messageBusyRef = useRef(false);
   const pendingSubmissionRef = useRef<PendingSubmission | null>(null);
   const accountChangeChannelRef = useRef<BroadcastChannel | null>(null);
@@ -132,6 +190,14 @@ export function CoachAccountSessions() {
   }, []);
 
   const activateConversation = useCallback((conversationId: string | null) => {
+    if (activeConversationIdRef.current !== conversationId && messageRequestRef.current) {
+      messageRequestRef.current.abort();
+      messageRequestRef.current = null;
+      messageBusyRef.current = false;
+      activeRunRef.current = null;
+      setMessageBusy(false);
+      setActiveRunId(null);
+    }
     conversationEpochRef.current += 1;
     detailRequestRef.current?.abort();
     detailRequestRef.current = null;
@@ -160,6 +226,7 @@ export function CoachAccountSessions() {
     requestsRef.current.clear();
     detailRequestRef.current = null;
     messageRequestRef.current = null;
+    activeRunRef.current = null;
     accountRef.current = null;
     messageBusyRef.current = false;
     pendingSubmissionRef.current = null;
@@ -169,7 +236,9 @@ export function CoachAccountSessions() {
     setDetailLoading(false);
     setMessageDraft("");
     setMessageBusy(false);
+    setActiveRunId(null);
     setPendingRetry(false);
+    setRetryMode("same");
     setMessageError("");
     setTitleDraft("");
     setError("");
@@ -430,6 +499,7 @@ export function CoachAccountSessions() {
         setMessageDraft("");
         pendingSubmissionRef.current = null;
         setPendingRetry(false);
+        setRetryMode("same");
         setMessageError("");
         updateConversationQuery(created.id);
       }
@@ -459,14 +529,23 @@ export function CoachAccountSessions() {
     setMessageError("");
     pendingSubmissionRef.current = null;
     setPendingRetry(false);
+    setRetryMode("same");
     updateConversationQuery(conversationId);
     await loadConversation(conversationId, epoch, account.id, conversationEpoch);
+  }
+
+  async function copyUnsavedAssistantReply(content: string) {
+    const copied = await copyCodeText(content);
+    setNotice(copied
+      ? "未保存回复已复制；请先粘贴备份，再离开或刷新页面。"
+      : "自动复制不可用；请选中当前回复手动复制，离开或刷新前先备份。");
   }
 
   async function sendMessage(event?: React.FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const conversationId = activeConversationIdRef.current;
-    if (!account || !conversationId || conversation?.id !== conversationId || messageBusyRef.current || !messageDraft.trim()) return;
+    if (!account || !status || !conversationId || conversation?.id !== conversationId || messageBusyRef.current || !messageDraft.trim()) return;
+    const usesMockAssistant = status.assistantProvider === "local-mock";
     const epoch = epochRef.current;
     const conversationEpoch = conversationEpochRef.current;
     const isCurrentSubmission = () => epoch === epochRef.current
@@ -480,35 +559,165 @@ export function CoachAccountSessions() {
     pendingSubmissionRef.current = submission;
     messageBusyRef.current = true;
     setMessageBusy(true);
+    setActiveRunId(null);
+    activeRunRef.current = null;
     setPendingRetry(false);
     setMessageError("");
     const controller = registerRequest();
     messageRequestRef.current?.abort();
     messageRequestRef.current = controller;
     try {
-      const response = await requestJson<{ message: ConversationMessage; duplicate: boolean }>(
-        `/api/coach/conversations/${encodeURIComponent(conversationId)}/messages`,
-        { method: "POST", body: { clientMessageId: submission.id, content: submission.content }, signal: controller.signal, accountId: account.id },
-      );
-      if (!isCurrentSubmission() || controller.signal.aborted || response.message.conversationId !== conversationId) return;
-      setConversation((current) => {
-        if (!current || current.id !== conversationId || current.messages.some((message) => message.id === response.message.id)) return current;
-        return { ...current, messages: [...current.messages, response.message], updatedAt: response.message.createdAt };
+      if (!usesMockAssistant) {
+        const saved = await requestJson<{ message: ConversationMessage; duplicate: boolean }>(
+          `/api/coach/conversations/${encodeURIComponent(conversationId)}/messages`,
+          { method: "POST", body: { clientMessageId: submission.id, content: submission.content }, signal: controller.signal, accountId: account.id },
+        );
+        if (!isCurrentSubmission() || controller.signal.aborted || saved.message.conversationId !== conversationId) return;
+        setConversation((current) => upsertConversationMessages(current, conversationId, [saved.message]));
+        setConversations((current) => current.map((item) => item.id === conversationId ? { ...item, updatedAt: saved.message.createdAt } : item)
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
+        setMessageDraft((current) => current === submission.content ? "" : current);
+        pendingSubmissionRef.current = null;
+        setPendingRetry(false);
+        setRetryMode("same");
+        setMessageError("");
+        setNotice(saved.duplicate ? "已确认保存；服务器识别到这是同一条重试消息，没有重复新增。" : "你的文本消息已保存；AI 未连接，因此没有助手回复。");
+        return;
+      }
+      const response = await fetch(`/api/coach/conversations/${encodeURIComponent(conversationId)}/runs`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [requestHeaderName]: requestHeaderValue,
+          [expectedAccountHeaderName]: account.id,
+        },
+        body: JSON.stringify({ clientRunId: submission.id, content: submission.content }),
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
       });
-      setConversations((current) => current.map((item) => item.id === conversationId ? { ...item, updatedAt: response.message.createdAt } : item)
-        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
-      setMessageDraft((current) => current === submission.content ? "" : current);
-      pendingSubmissionRef.current = null;
-      setPendingRetry(false);
-      setMessageError("");
-      setNotice(response.duplicate ? "已确认保存；服务器识别到这是同一条重试消息，没有重复新增。" : "你的消息已保存到站点账号。");
+      if (!response.ok) {
+        const payload: unknown = await response.json().catch(() => null);
+        const data = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+        const code = typeof data.error === "string" ? data.error : null;
+        const message = code === "assistant_not_connected"
+          ? "AI 未连接。当前页面不会为未配置的模型伪造回复。"
+          : code === "account_changed" ? "站点账号已在其他标签页发生变化。" : code ?? "助手运行没有启动。";
+        throw new AccountApiError(message, response.status, code);
+      }
+      if (response.headers.get("content-type")?.includes("application/json")) {
+        const duplicate = await response.json() as {
+          duplicate: boolean;
+          run: { id: string; status: ConversationMessage["status"] };
+          userMessage: ConversationMessage;
+          assistantMessage: ConversationMessage;
+        };
+        if (!isCurrentSubmission() || controller.signal.aborted) return;
+        setConversation((current) => upsertConversationMessages(current, conversationId, [duplicate.userMessage, duplicate.assistantMessage]));
+        if (duplicate.run.status === "complete") {
+          setMessageDraft((current) => current === submission.content ? "" : current);
+          pendingSubmissionRef.current = null;
+          setPendingRetry(false);
+          setRetryMode("same");
+          setNotice("服务器识别到这是同一运行键，没有重复调用助手；已恢复已保存结果。");
+        } else if (duplicate.run.status === "pending" || duplicate.run.status === "streaming") {
+          setPendingRetry(true);
+          setRetryMode("same");
+          setNotice("服务器识别到同一运行仍在进行，没有再次调用助手；重试同一运行键只会读取当前保存进度。");
+        } else {
+          pendingSubmissionRef.current = null;
+          setPendingRetry(true);
+          setRetryMode("new");
+          setNotice("服务器识别到同一运行已结束，没有再次调用助手；可以明确发起一个新运行。");
+        }
+        return;
+      }
+
+      let sawTerminalEvent = false;
+      await readAssistantStream(response, (event) => {
+        if (!isCurrentSubmission() || controller.signal.aborted) return;
+        if (event.type === "started") {
+          const runId = typeof event.runId === "string" ? event.runId : "";
+          const userMessage = event.userMessage as ConversationMessage;
+          const assistantMessage = event.assistantMessage as ConversationMessage;
+          if (!runId || userMessage?.conversationId !== conversationId || assistantMessage?.conversationId !== conversationId) return;
+          activeRunRef.current = { runId, assistantMessageId: assistantMessage.id, conversationId, accountId: account.id, content: assistantMessage.content };
+          setActiveRunId(runId);
+          setConversation((current) => upsertConversationMessages(current, conversationId, [userMessage, assistantMessage]));
+          setConversations((current) => current.map((item) => item.id === conversationId ? { ...item, updatedAt: userMessage.createdAt } : item)
+            .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
+          setMessageError("");
+          setNotice("消息已原子保存，正在接收本机 Mock 流式演示回复。");
+        } else if (event.type === "delta" && typeof event.text === "string" && typeof event.runId === "string") {
+          const activeRun = activeRunRef.current;
+          if (!activeRun || activeRun.runId !== event.runId || activeRun.conversationId !== conversationId) return;
+          activeRun.content += event.text;
+          setConversation((current) => {
+            if (!current || current.id !== conversationId) return current;
+            return {
+              ...current,
+              messages: current.messages.map((message) => message.id === activeRun.assistantMessageId
+                ? { ...message, content: message.content + event.text as string, status: "streaming" }
+                : message),
+            };
+          });
+        } else if (event.type === "terminal" && typeof event.runId === "string") {
+          const activeRun = activeRunRef.current;
+          if (!activeRun || activeRun.runId !== event.runId || activeRun.conversationId !== conversationId) return;
+          const streamedStatus = event.status;
+          if (streamedStatus !== "complete" && streamedStatus !== "interrupted" && streamedStatus !== "failed" && streamedStatus !== "cancelled") return;
+          const contentPersisted = event.contentPersisted !== false;
+          const terminalStatusPersisted = event.terminalStatusPersisted !== false;
+          const terminalStatus: ConversationMessage["status"] = streamedStatus === "complete" && (!contentPersisted || !terminalStatusPersisted)
+            ? "failed"
+            : streamedStatus;
+          sawTerminalEvent = true;
+          setConversation((current) => {
+            if (!current || current.id !== conversationId) return current;
+            return {
+              ...current,
+              messages: current.messages.map((message) => message.id === activeRun.assistantMessageId
+                ? { ...message, status: terminalStatus, contentPersisted }
+                : message),
+            };
+          });
+          activeRunRef.current = null;
+          setActiveRunId(null);
+          messageBusyRef.current = false;
+          setMessageBusy(false);
+          if (terminalStatus === "complete") {
+            setMessageDraft((current) => current === submission.content ? "" : current);
+            pendingSubmissionRef.current = null;
+            setPendingRetry(false);
+            setRetryMode("same");
+            setMessageError("");
+            setNotice("本机 Mock 演示已完成，用户消息和助手回复均已保存。");
+          } else {
+            pendingSubmissionRef.current = null;
+            setPendingRetry(true);
+            setRetryMode("new");
+            const errorMessage = !contentPersisted
+              ? "回复尚未保存；完整内容仍在当前页面。请复制未保存回复备份，离开或刷新前先保存。"
+              : !terminalStatusPersisted
+                ? "回复文字已保存，但运行终态未写入数据库；刷新后可能显示为中断。"
+                : terminalStatus === "failed"
+                  ? "助手运行失败；数据库已保留成功保存的部分回复。"
+                  : "助手运行已停止；你的输入和已保存的部分回复都已保留。";
+            setMessageError(errorMessage);
+          }
+        }
+      });
+      if (!sawTerminalEvent && isCurrentSubmission() && !controller.signal.aborted) {
+        throw new Error("流式连接提前结束；已保存进度可刷新恢复，重试不会重复启动同一运行。");
+      }
     } catch (cause) {
       if (epoch === epochRef.current && accountRef.current?.id === account.id && !isAbortError(cause)) {
         if (cause instanceof AccountApiError && cause.status === 401) expireAccount();
         else if (cause instanceof AccountApiError && cause.status === 409 && cause.code === "account_changed") refreshAfterAccountMismatch();
         else if (isCurrentSubmission()) {
           setPendingRetry(true);
-          setMessageError("暂时没有收到保存确认。再次重试会沿用同一请求 ID，避免重复保存。");
+          setRetryMode("same");
+          setMessageError(cause instanceof Error ? cause.message : "暂时没有收到运行确认。重试会沿用同一运行键，避免重复调用助手。");
         }
       }
     } finally {
@@ -516,8 +725,64 @@ export function CoachAccountSessions() {
       releaseRequest(controller);
       if (isCurrentMessageRequest) {
         messageBusyRef.current = false;
-        if (epoch === epochRef.current) setMessageBusy(false);
+        if (epoch === epochRef.current && isCurrentSubmission()) setMessageBusy(false);
       }
+    }
+  }
+
+  async function cancelAssistantRun() {
+    const activeRun = activeRunRef.current;
+    if (!account || !activeRun || activeRun.accountId !== account.id || activeRun.conversationId !== activeConversationIdRef.current) return;
+    const epoch = epochRef.current;
+    try {
+      const result = await requestJson<{
+        run: { status: ConversationMessage["status"] };
+        assistantMessage: ConversationMessage;
+        contentPersisted?: boolean;
+        terminalStatusPersisted?: boolean;
+      }>(
+        `/api/coach/conversations/${encodeURIComponent(activeRun.conversationId)}/runs/${encodeURIComponent(activeRun.runId)}/cancel`,
+        { method: "POST", body: {}, accountId: account.id },
+      );
+      if ((activeRunRef.current && activeRunRef.current.runId !== activeRun.runId)
+        || epoch !== epochRef.current
+        || accountRef.current?.id !== activeRun.accountId
+        || activeConversationIdRef.current !== activeRun.conversationId) return;
+      const submission = pendingSubmissionRef.current;
+      const contentPersisted = result.contentPersisted ?? result.assistantMessage.content.startsWith(activeRun.content);
+      const assistantMessage = {
+        ...result.assistantMessage,
+        content: contentPersisted ? result.assistantMessage.content : activeRun.content,
+        contentPersisted,
+      };
+      setConversation((current) => upsertConversationMessages(current, activeRun.conversationId, [assistantMessage]));
+      activeRunRef.current = null;
+      setActiveRunId(null);
+      messageBusyRef.current = false;
+      setMessageBusy(false);
+      if (!contentPersisted || result.terminalStatusPersisted === false) {
+        pendingSubmissionRef.current = null;
+        setPendingRetry(true);
+        setRetryMode("new");
+        setMessageError(!contentPersisted
+          ? "回复尚未保存；完整内容仍在当前页面。请复制未保存回复备份，离开或刷新前先保存。"
+          : "回复文字已保存，但运行终态未写入数据库；刷新后可能显示为中断。");
+      } else if (result.run.status === "cancelled" || result.run.status === "interrupted" || result.run.status === "failed") {
+        pendingSubmissionRef.current = null;
+        setPendingRetry(true);
+        setRetryMode("new");
+        setMessageError(result.run.status === "failed"
+          ? "助手运行失败；数据库已保留成功保存的部分回复。"
+          : "助手运行已停止；你的输入和已保存的部分回复都已保留。");
+      } else if (result.run.status === "complete") {
+        setMessageDraft((current) => current === submission?.content ? "" : current);
+        pendingSubmissionRef.current = null;
+        setPendingRetry(false);
+        setMessageError("");
+        setNotice("助手回复在停止请求到达前已经完成，结果已保存。");
+      }
+    } catch (cause) {
+      if (!isAbortError(cause)) setMessageError(cause instanceof Error ? cause.message : "停止请求没有完成。");
     }
   }
 
@@ -531,16 +796,18 @@ export function CoachAccountSessions() {
         <div className="intro-row">
           <div>
             <h1 id="account-page-title">账号会话</h1>
-            <p>连接知序站点账号，跨刷新查看会话并保存你发送的文本消息。</p>
+            <p>连接知序站点账号，跨刷新查看你的消息与助手运行记录。</p>
           </div>
-          <Badge variant="outline">模型连接：待接入</Badge>
+          <Badge variant="outline">{status?.assistantProvider === "local-mock" ? "本机 Mock 体验" : status?.assistantProvider === "unavailable" ? "AI 未连接" : "正在检查 AI 连接"}</Badge>
         </div>
       </section>
 
       <Card className="coach-account-model-notice">
         <CardContent>
-          <div><strong>站点账号与模型连接是两件事</strong><p>当前切片只提供账号会话和用户消息持久化，不会调用模型，也不会连接本机共享模型服务。助手流式回复尚未接入服务器保存。</p></div>
-          <Badge variant="outline">无模型请求</Badge>
+          <div><strong>站点账号与模型连接是两件事</strong><p>{status?.assistantProvider === "local-mock"
+            ? "仅 local:dev 本机启用 Mock 流式演示；它不会连接真实模型，也不会复用本机 SIWC 凭据。"
+            : "AI 未连接。此页面不会伪造助手回复；你仍可保存纯文本消息，但不会收到助手回复。"}</p></div>
+          <Badge variant="outline">{status?.assistantProvider === "local-mock" ? "明确标记的 Mock 回复" : "未连接"}</Badge>
         </CardContent>
       </Card>
 
@@ -589,7 +856,7 @@ export function CoachAccountSessions() {
 
             <Card className="coach-account-session-detail">
               <CardHeader>
-                <div><CardTitle>{conversation?.title ?? activeConversation?.title ?? "会话详情"}</CardTitle><p>消息仅包含你发送并已保存的文本。</p></div>
+                <div><CardTitle>{conversation?.title ?? activeConversation?.title ?? "会话详情"}</CardTitle><p>用户消息、助手回复和运行状态会一并保存。</p></div>
                 {detailLoading && <LoaderCircle className="animate-spin" size={17} aria-label="正在读取会话详情" />}
               </CardHeader>
               <CardContent>
@@ -599,16 +866,23 @@ export function CoachAccountSessions() {
                   <>
                     <ol className="coach-account-messages" data-testid="conversation-messages">
                       {conversation.messages.map((message) => (
-                        <li key={message.id} data-testid="saved-message" data-message-id={message.id}>
-                          <span>{message.role === "user" ? "我" : "助手"}</span>
-                          <p>{message.content}</p>
+                        <li key={message.id} data-testid="saved-message" data-message-id={message.id} data-message-status={message.status}>
+                          <span>{messageStatusLabel(message)}</span>
+                          {message.role === "assistant"
+                            ? <CoachMarkdown source={message.content} streaming={message.status === "pending" || message.status === "streaming"} />
+                            : <p className="coach-account-message-content">{message.content}</p>}
+                          {message.role === "assistant" && message.contentPersisted === false && (
+                            <Button type="button" variant="outline" size="sm" onClick={() => void copyUnsavedAssistantReply(message.content)} data-testid="copy-unsaved-assistant-reply">
+                              <Copy size={14} aria-hidden="true" />复制未保存回复
+                            </Button>
+                          )}
                           <time dateTime={message.createdAt}>{formatDate(message.createdAt)}</time>
                         </li>
                       ))}
-                      {conversation.messages.length === 0 && <li className="coach-account-empty-message">这个会话还没有消息。这里不会自动生成助手回复。</li>}
+                      {conversation.messages.length === 0 && <li className="coach-account-empty-message">向本机 Mock 助手发送一条消息后，会在这里显示并保存双方内容。</li>}
                     </ol>
                     <form className="coach-account-composer" onSubmit={(event) => void sendMessage(event)}>
-                      <Label htmlFor="account-message">发送一条用户消息</Label>
+                      <Label htmlFor="account-message">{status?.assistantProvider === "local-mock" ? "发送给本机 Mock 助手" : "保存纯文本消息（AI 未连接）"}</Label>
                       <Textarea id="account-message" value={messageDraft} maxLength={500_000} onChange={(event) => {
                         const nextValue = event.target.value;
                         setMessageDraft(nextValue);
@@ -616,10 +890,10 @@ export function CoachAccountSessions() {
                           pendingSubmissionRef.current = null;
                           setPendingRetry(false);
                         }
-                      }} placeholder="输入会保存到当前站点账号的消息……" disabled={messageBusy || busyAction !== null || sessionLoading} data-testid="message-draft" />
-                      <div className="coach-account-composer-footer"><span>{messageDraft.length.toLocaleString("zh-CN")} / 500,000</span><Button type="submit" disabled={messageBusy || busyAction !== null || sessionLoading || !messageDraft.trim()} data-testid="send-message">{messageBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}{messageBusy ? "保存中" : "保存消息"}</Button></div>
+                      }} placeholder={status?.assistantProvider === "local-mock" ? "输入内容，观察本机 Mock 流式演示……" : "AI 未连接；保存后不会生成助手回复。"} disabled={messageBusy || busyAction !== null || sessionLoading || !status} data-testid="message-draft" />
+                      <div className="coach-account-composer-footer"><span>{messageDraft.length.toLocaleString("zh-CN")} / 500,000</span><div className="coach-account-composer-actions">{messageBusy && activeRunId && <Button type="button" variant="outline" onClick={() => void cancelAssistantRun()} data-testid="cancel-assistant-run"><Square size={14} aria-hidden="true" />停止</Button>}<Button type="submit" disabled={messageBusy || busyAction !== null || sessionLoading || !status || !messageDraft.trim()} data-testid="send-message">{messageBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}{messageBusy ? "生成中" : status?.assistantProvider === "local-mock" ? "发送" : "保存消息"}</Button></div></div>
                       {messageError && <p className="coach-account-inline-error" role="alert"><AlertCircle size={15} aria-hidden="true" />{messageError}</p>}
-                      {pendingRetry && !messageBusy && <Button type="button" variant="outline" size="sm" onClick={() => void sendMessage()} data-testid="retry-message">重试保存同一条消息</Button>}
+                      {pendingRetry && !messageBusy && <Button type="button" variant="outline" size="sm" onClick={() => void sendMessage()} data-testid="retry-message">{retryMode === "same" ? "重试同一运行键" : "重新发起新运行"}</Button>}
                     </form>
                   </>
                 )}

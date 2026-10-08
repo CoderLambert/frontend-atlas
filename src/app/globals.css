@@ -189,10 +189,10 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .answer-editor-content, .answer-editor-panel, .answer-preview-panel { min-width: 0; }
 .answer-editor-content.answer-view-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 1rem; }
 .answer-panel-title { margin: 0 0 .5rem; color: #52675b; font-size: .8rem; font-weight: 650; }
-.answer-input { display: block; width: 100%; height: clamp(30rem, 68vh, 48rem); min-height: 30rem; resize: vertical; border: 1px solid var(--input); border-radius: .75rem; background: #fff; padding: .9rem 1rem; color: var(--foreground); font-size: .98rem; line-height: 1.7; outline: none; }
+.answer-input { display: block; width: 100%; height: clamp(34rem, 72vh, 44rem); min-height: 34rem; resize: vertical; border: 1px solid var(--input); border-radius: .75rem; background: #fff; padding: .9rem 1rem; color: var(--foreground); font-size: .98rem; line-height: 1.7; outline: none; }
 .answer-input::placeholder { color: #929d96; }
 .answer-input:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgb(40 83 71 / 18%); }
-.answer-markdown-preview { width: 100%; height: clamp(30rem, 68vh, 48rem); min-width: 0; min-height: 30rem; max-width: 100%; overflow: auto; overflow-wrap: anywhere; border: 1px solid var(--input); border-radius: .75rem; background: #fcfdfb; padding: .95rem 1rem; color: #344a3e; outline: none; }
+.answer-markdown-preview { width: 100%; height: clamp(34rem, 72vh, 44rem); min-width: 0; min-height: 34rem; max-width: 100%; overflow: auto; overflow-wrap: anywhere; border: 1px solid var(--input); border-radius: .75rem; background: #fcfdfb; padding: .95rem 1rem; color: #344a3e; outline: none; }
 .answer-markdown-preview:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgb(40 83 71 / 18%); }
 .answer-markdown-preview .coach-markdown { max-width: 72ch; }
 .answer-preview-empty, .markdown-preview-loading { margin: 0; color: #839087; font-size: .88rem; line-height: 1.7; }
@@ -475,6 +475,8 @@ button, a { -webkit-tap-highlight-color: transparent; }
   .app-main-column { margin-left: 12.75rem; }
   .home-feature-grid { grid-template-columns: minmax(0, 1.25fr) minmax(15.5rem, .9fr); }
   .stat-row { max-width: 24rem; }
+  .question-grid { grid-template-columns: 1fr; }
+  .question-aside { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 980px) {
   .assist-guide-grid { grid-template-columns: 1fr; }
@@ -717,7 +719,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 }
 @media (max-width: 760px) {
   .answer-editor-content.answer-view-split { grid-template-columns: minmax(0, 1fr); }
-  .answer-input, .answer-markdown-preview { height: clamp(22rem, 58vh, 34rem); min-height: 22rem; }
+  .answer-input, .answer-markdown-preview { height: clamp(24rem, 60vh, 36rem); min-height: 24rem; }
 }
 
 /* Authenticated server-saved conversation slice. */
@@ -753,15 +755,19 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .coach-account-session-list button > svg { flex: 0 0 auto; color: #75847b; }
 .coach-account-muted, .coach-account-empty { margin: 0; border: 1px dashed #d7e0d8; border-radius: .7rem; background: #fafbf8; padding: .75rem; color: #738078; font-size: .78rem; line-height: 1.6; }
 .coach-account-session-detail { min-height: 20rem; }
-.coach-account-messages { display: grid; min-width: 0; gap: .65rem; margin: 0; padding: 0; list-style: none; }
+.coach-account-messages { display: grid; min-width: 0; max-height: min(65vh, 48rem); overflow: auto; overscroll-behavior: contain; gap: .65rem; margin: 0; padding: 0 .2rem 0 0; list-style: none; }
 .coach-account-messages > li:not(.coach-account-empty-message) { display: grid; gap: .35rem; border: 1px solid #dfe7df; border-radius: .75rem; background: #f7faf6; padding: .75rem .85rem; }
 .coach-account-messages > li > span { color: #456555; font-size: .72rem; font-weight: 700; }
-.coach-account-messages > li > p { margin: 0; color: #33483c; font-size: .87rem; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.coach-account-message-content { margin: 0; color: #33483c; font-size: .87rem; line-height: 1.7; overflow-wrap: anywhere; white-space: pre-wrap; }
+.coach-account-messages .coach-markdown { gap: .55rem; font-size: .86rem; line-height: 1.7; }
+.coach-account-messages .coach-markdown-render { gap: .55rem; }
+.coach-account-messages .coach-markdown-loading { margin: 0; color: #718078; font-size: .78rem; }
 .coach-account-messages > li > time { color: #829087; font-size: .68rem; }
 .coach-account-empty-message { border: 1px dashed #d7e0d8; border-radius: .7rem; padding: .7rem; color: #77847c; font-size: .77rem; }
 .coach-account-composer { display: grid; gap: .45rem; border-top: 1px solid #e6ebe6; padding-top: .85rem; }
 .coach-account-composer textarea { min-height: 7.5rem; resize: vertical; background: #fff; line-height: 1.7; }
 .coach-account-composer-footer { display: flex; align-items: center; justify-content: space-between; gap: .6rem; color: #7a877f; font-size: .7rem; }
+.coach-account-composer-actions { display: flex; align-items: center; justify-content: flex-end; gap: .45rem; }
 .coach-account-inline-error, .coach-account-inline-notice { display: flex; align-items: flex-start; gap: .4rem; margin: 0; color: #9b4038; font-size: .78rem; line-height: 1.55; }
 .coach-account-inline-error svg, .coach-account-inline-notice svg { flex: 0 0 auto; margin-top: .1rem; }
 .coach-account-inline-notice { color: #35614f; }

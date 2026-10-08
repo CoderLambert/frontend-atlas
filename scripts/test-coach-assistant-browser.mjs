@@ -1,0 +1,282 @@
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:net";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { openSqliteDatabase } from "../src/lib/db/sqlite.ts";
+
+const projectRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const tempRoot = mkdtempSync(join(tmpdir(), "frontend-atlas-assistant-browser-"));
+const databasePath = join(tempRoot, "assistant.sqlite");
+const browserProfilePath = join(tempRoot, "chromium-profile");
+const chromiumPath = process.env.CHROMIUM_PATH || "/usr/bin/chromium";
+const desktopScreenshot = "/home/lambert/Documents/Codex/2026-10-08/task-3/frontend-atlas-coach-assistant-mock-desktop.png";
+const mobileScreenshot = "/home/lambert/Documents/Codex/2026-10-08/task-3/frontend-atlas-coach-assistant-mock-mobile.png";
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+let nextProcess = null;
+let chromeProcess = null;
+let browserDebugPort = null;
+const browserSockets = new Set();
+let serverOutput = "";
+
+async function freePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Could not reserve a temporary local port.");
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return address.port;
+}
+
+function seedDatabase() {
+  const opened = openSqliteDatabase(databasePath);
+  migrate(opened.db, { migrationsFolder: join(projectRoot, "src/lib/db/migrations") });
+  const now = Date.now();
+  opened.client.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+    .run("mock-user-a", "Mock User A", "mock-a@example.test", 0, now, now);
+  opened.client.close();
+}
+
+async function waitFor(check, label, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const value = await check();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    if (nextProcess?.exitCode !== null && nextProcess?.exitCode !== undefined) {
+      throw new Error(`Next dev server exited early (${nextProcess.exitCode}).\n${serverOutput.slice(-5000)}`);
+    }
+    await delay(40);
+  }
+  throw new Error(`Timed out waiting for ${label}.${lastError ? ` Last error: ${lastError.message}` : ""}\n${serverOutput.slice(-5000)}`);
+}
+
+function stopProcess(child) {
+  if (!child || child.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      if (child.exitCode === null) child.kill("SIGKILL");
+    }, 3000);
+    child.once("exit", () => { clearTimeout(timeout); resolve(); });
+    child.kill("SIGTERM");
+  });
+}
+
+function shellReadyExpression(expression) {
+  return `(() => (${expression}))()`;
+}
+
+const setValueExpression = (selector, value) => `(() => {
+  const element = document.querySelector(${JSON.stringify(selector)});
+  if (!element) throw new Error("Missing input ${selector}");
+  const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), "value")?.set;
+  if (setter) setter.call(element, ${JSON.stringify(value)});
+  else element.value = ${JSON.stringify(value)};
+  element.dispatchEvent(new Event("input", { bubbles: true }));
+  element.dispatchEvent(new Event("change", { bubbles: true }));
+  return element.value;
+})()`;
+
+async function connectBrowserTarget(target) {
+  const socket = new WebSocket(target.webSocketDebuggerUrl);
+  browserSockets.add(socket);
+  socket.addEventListener("close", () => browserSockets.delete(socket), { once: true });
+  await new Promise((resolve, reject) => {
+    socket.addEventListener("open", resolve, { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+  let nextId = 0;
+  const pending = new Map();
+  socket.addEventListener("message", (event) => {
+    const message = JSON.parse(event.data);
+    if (!message.id || !pending.has(message.id)) return;
+    const current = pending.get(message.id);
+    pending.delete(message.id);
+    if (message.error) current.reject(new Error(message.error.message));
+    else current.resolve(message.result ?? {});
+  });
+  function command(method, params = {}) {
+    const id = ++nextId;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      socket.send(JSON.stringify({ id, method, params }));
+      setTimeout(() => {
+        const current = pending.get(id);
+        if (current) {
+          pending.delete(id);
+          reject(new Error(`Chromium command timed out: ${method}`));
+        }
+      }, 15_000);
+    });
+  }
+  async function evaluate(expression) {
+    const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? "Browser expression failed.");
+    return result.result?.value;
+  }
+  return { command, evaluate, close: () => { if (socket.readyState < WebSocket.CLOSING) socket.close(); } };
+}
+
+async function startBrowser(startUrl) {
+  mkdirSync(browserProfilePath, { recursive: true, mode: 0o700 });
+  chromeProcess = spawn(chromiumPath, [
+    "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--disable-background-networking",
+    "--remote-debugging-port=0", `--user-data-dir=${browserProfilePath}`, "about:blank",
+  ], { stdio: ["ignore", "ignore", "pipe"] });
+  let chromeOutput = "";
+  chromeProcess.stderr.on("data", (chunk) => { chromeOutput = `${chromeOutput}${chunk}`.slice(-4000); });
+  const activePortPath = join(browserProfilePath, "DevToolsActivePort");
+  const portContents = await waitFor(() => existsSync(activePortPath) ? readFileSync(activePortPath, "utf8") : "", "Chromium DevTools", 15_000).catch((error) => {
+    throw new Error(`${error.message}\n${chromeOutput}`);
+  });
+  [browserDebugPort] = portContents.trim().split("\n");
+  const response = await fetch(`http://127.0.0.1:${browserDebugPort}/json/new?about%3Ablank`, { method: "PUT" });
+  assert.equal(response.status, 200, "Chromium opens an isolated temporary tab");
+  const browser = await connectBrowserTarget(await response.json());
+  await browser.command("Page.enable");
+  await browser.command("Runtime.enable");
+  await browser.command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await browser.command("Page.navigate", { url: startUrl });
+  return browser;
+}
+
+try {
+  assert.ok(existsSync(chromiumPath), `Chromium binary exists at ${chromiumPath}`);
+  seedDatabase();
+  const port = await freePort();
+  const origin = `http://127.0.0.1:${port}`;
+  const nextBin = join(projectRoot, "node_modules/next/dist/bin/next");
+  const testEnv = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    NODE_ENV: "development",
+    NEXT_TELEMETRY_DISABLED: "1",
+    FRONTEND_ATLAS_LOCAL_MODE: "1",
+    NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE: "1",
+    FRONTEND_ATLAS_MOCK_AUTH: "1",
+    FRONTEND_ATLAS_MOCK_ASSISTANT: "1",
+    FRONTEND_ATLAS_DB_PATH: databasePath,
+    BETTER_AUTH_URL: origin,
+    BETTER_AUTH_SECRET: "",
+    GITHUB_CLIENT_ID: "",
+    GITHUB_CLIENT_SECRET: "",
+    GOOGLE_CLIENT_ID: "",
+    GOOGLE_CLIENT_SECRET: "",
+  };
+  nextProcess = spawn(process.execPath, [nextBin, "dev", "--hostname", "127.0.0.1", "--port", String(port)], {
+    cwd: projectRoot,
+    env: testEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  for (const stream of [nextProcess.stdout, nextProcess.stderr]) stream.on("data", (chunk) => { serverOutput = `${serverOutput}${chunk}`.slice(-10_000); });
+
+  await waitFor(async () => {
+    const response = await fetch(`${origin}/api/site-account`, { signal: AbortSignal.timeout(1000) }).catch(() => null);
+    return response?.status === 200;
+  }, "temporary Next.js account endpoint");
+  process.stdout.write("assistant browser: temporary server ready\n");
+  const statusResponse = await fetch(`${origin}/api/site-account`, { cache: "no-store" });
+  assert.equal((await statusResponse.json()).assistantProvider, "local-mock", "the local test server explicitly reports Mock mode");
+
+  const browser = await startBrowser(`${origin}/coach/sessions/`);
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=mock-login-a]') !== null")), "Mock login UI");
+  await browser.evaluate("document.querySelector('[data-testid=mock-login-a]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('mock-a@example.test')")), "Mock account A login");
+  await browser.evaluate(setValueExpression("#account-session-title", "Mock assistant showcase"));
+  await browser.evaluate("document.querySelector('[data-testid=create-conversation]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=conversation-messages]') !== null")), "new conversation detail");
+  await browser.evaluate(setValueExpression("#account-message", "请演示一次本机助手流式传输。"));
+  await browser.evaluate("document.querySelector('[data-testid=send-message]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-message-status=streaming]') !== null")), "streaming assistant message");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('.coach-account-messages li[data-message-status=complete] .coach-markdown') !== null")), "completed assistant message");
+  process.stdout.write("assistant browser: first streaming response completed\n");
+  const acceptedUi = await browser.evaluate(`(() => ({
+    mockLabel: document.body.innerText.includes("本机 Mock 体验"),
+    explicitMockReply: document.body.innerText.includes("本机 Mock 流式演示"),
+    noRealAnswerClaim: document.body.innerText.includes("不会连接真实模型"),
+    codeBlock: !!document.querySelector("[data-streamdown=code-block] pre code"),
+    codeCopy: !!document.querySelector("[data-streamdown=code-block-copy-button]"),
+    bothMessages: document.querySelectorAll('[data-testid="saved-message"]').length === 2,
+    honestDetailLabel: document.body.innerText.includes("用户消息、助手回复和运行状态会一并保存。"),
+  }))()`);
+  assert.deepEqual(acceptedUi, {
+    mockLabel: true,
+    explicitMockReply: true,
+    noRealAnswerClaim: true,
+    codeBlock: true,
+    codeCopy: true,
+    bothMessages: true,
+    honestDetailLabel: true,
+  }, "the UI labels Mock clearly and renders its saved Markdown code block with copy control");
+
+  await browser.evaluate("(() => { const style = document.createElement('style'); style.textContent = 'nextjs-portal { display: none !important }'; document.head.append(style); })()");
+  const desktop = await browser.command("Page.captureScreenshot", { format: "png", captureBeyondViewport: true, fromSurface: true });
+  writeFileSync(desktopScreenshot, Buffer.from(desktop.data, "base64"));
+  process.stdout.write("assistant browser: desktop screenshot saved\n");
+  await browser.command("Page.reload", { ignoreCache: true });
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('.coach-account-messages li[data-message-status=complete] .coach-markdown')?.innerText.includes('本机 Mock 流式演示')")), "assistant Markdown restored after refresh");
+  await browser.command("Emulation.setDeviceMetricsOverride", { width: 390, height: 1800, deviceScaleFactor: 1, mobile: true });
+  await delay(300);
+  const mobile = await browser.command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false, fromSurface: true });
+  writeFileSync(mobileScreenshot, Buffer.from(mobile.data, "base64"));
+  process.stdout.write("assistant browser: mobile screenshot saved\n");
+
+  const stoppedInput = "停止后保留这条输入。";
+  await browser.evaluate(setValueExpression("#account-message", stoppedInput));
+  await browser.evaluate("document.querySelector('[data-testid=send-message]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=cancel-assistant-run]') !== null")), "assistant run is stoppable before completion");
+  await browser.evaluate(`(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.__cancelRunResult = null;
+    window.fetch = async (input, init = {}) => {
+      const response = await nativeFetch(input, init);
+      const url = typeof input === "string" ? new URL(input, location.origin) : new URL(input.url);
+      if (url.pathname.replace(/\\/$/u, "").endsWith("/cancel")) {
+        window.__cancelRunResult = { httpStatus: response.status, body: await response.clone().json() };
+      }
+      return response;
+    };
+  })()`);
+  await browser.evaluate("document.querySelector('[data-testid=cancel-assistant-run]').click()");
+  process.stdout.write("assistant browser: stop request sent\n");
+  await waitFor(() => browser.evaluate(shellReadyExpression("window.__cancelRunResult !== null")), "stop endpoint response", 15_000);
+  const cancelRunResult = await browser.evaluate("window.__cancelRunResult");
+  assert.equal(cancelRunResult.httpStatus, 200, "stop endpoint responds successfully");
+  assert.equal(cancelRunResult.body.run.status, "cancelled", `stop is terminal before UI reconciliation (received ${cancelRunResult.body.run.status})`);
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('.coach-account-messages li[data-message-status=cancelled] .coach-markdown') !== null")), "cancelled assistant message", 10_000);
+  assert.equal(await browser.evaluate("document.querySelector('[data-testid=message-draft]').value"), stoppedInput, "stopping a run keeps the unsent draft available");
+
+  const opened = openSqliteDatabase(databasePath);
+  try {
+    const persisted = opened.client.prepare("SELECT role, status, content FROM coach_messages ORDER BY created_at").all();
+    assert.equal(persisted.length, 4);
+    assert.deepEqual(persisted.map((message) => message.role), ["user", "assistant", "user", "assistant"]);
+    assert.equal(persisted[1].status, "complete");
+    assert.equal(persisted[3].status, "cancelled");
+    assert.ok(persisted[1].content.includes('const provider = "未连接";'));
+    assert.ok(persisted[3].content.length > 0, "cancelled stream preserves its partial answer");
+  } finally {
+    opened.client.close();
+  }
+
+  browser.close();
+  process.stdout.write(`coach assistant browser: Mock label, visible streaming, Markdown code/copy, refresh restoration, stop/draft preservation, persisted partial output, desktop and mobile screenshots passed\nDesktop: ${desktopScreenshot}\nMobile: ${mobileScreenshot}\n`);
+} catch (error) {
+  process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n${serverOutput.slice(-5000)}\n`);
+  process.exitCode = 1;
+} finally {
+  for (const socket of browserSockets) if (socket.readyState < WebSocket.CLOSING) socket.close();
+  browserSockets.clear();
+  await stopProcess(chromeProcess);
+  await stopProcess(nextProcess);
+  rmSync(tempRoot, { recursive: true, force: true });
+}

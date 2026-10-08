@@ -258,16 +258,17 @@ try {
   assert.equal(initialStatus.authConfigured, false, "real OAuth is not configured for this fixture");
   assert.equal(initialStatus.account, null, "the temporary browser starts signed out");
   assert.equal(initialStatus.mockAuthEnabled, true, "mock login is available only for this local test server");
+  assert.equal(initialStatus.assistantProvider, "unavailable", "an unconfigured provider reports unavailable instead of returning a fake reply");
 
   const browser = await createBrowserPage(`${origin}/coach/sessions/`);
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=mock-login-a]') !== null")), "mock login UI");
   const initialUi = await browser.evaluate(`(() => ({
     github: document.body.innerText.includes("GitHub") && document.body.innerText.includes("尚未配置"),
     google: document.body.innerText.includes("Google") && document.body.innerText.includes("尚未配置"),
-    modelPending: document.body.innerText.includes("模型连接：待接入"),
+    aiUnavailable: document.body.innerText.includes("AI 未连接"),
     noModelApiUrl: !document.body.innerText.includes("127.0.0.1:4317"),
   }))()`);
-  assert.deepEqual(initialUi, { github: true, google: true, modelPending: true, noModelApiUrl: true }, "the page distinguishes site login from an unavailable model");
+  assert.deepEqual(initialUi, { github: true, google: true, aiUnavailable: true, noModelApiUrl: true }, "the page distinguishes site login from an unavailable model");
 
   await browser.evaluate(`new Promise((resolve, reject) => {
     const request = indexedDB.open("zhixu-study", 2);
