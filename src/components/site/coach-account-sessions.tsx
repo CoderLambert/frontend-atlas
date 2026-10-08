@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, Copy, LoaderCircle, LogIn, LogOut, MessageSquareText, Plus, RefreshCw, Send, Square, UserRound } from "lucide-react";
+import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, Copy, DatabaseBackup, LoaderCircle, LogIn, LogOut, MessageSquareText, Plus, RefreshCw, Send, Square, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { copyCodeText } from "@/lib/copy-code.mjs";
+import { getLegacyCoachConversationsSnapshot, type CoachConversation } from "@/lib/study-store";
 
 const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
   loading: () => <p className="coach-markdown-loading">正在准备回复排版…</p>,
@@ -63,6 +64,9 @@ type DepartureAction =
   | { kind: "create-conversation"; title: string }
   | { kind: "sign-out" };
 type PendingDeparture = { action: DepartureAction; recoveries: UnsavedAssistantRecovery[] };
+type LegacyPreviewRecord = Omit<CoachConversation, "status"> & { status: string };
+type LegacyImportResult = { index: number; status: "imported" | "already_imported" | "conflict" | "invalid" | "failed" };
+type LegacyImportPreview = { accountId: string; records: LegacyPreviewRecord[] };
 
 const unsavedRecoveryPrefix = "frontend-atlas:coach-unsaved-assistant:v1:";
 const conversationMessageStatuses = new Set<ConversationMessage["status"]>(["pending", "streaming", "complete", "interrupted", "failed", "cancelled"]);
@@ -204,6 +208,14 @@ function formatDate(value: string) {
   return Number.isNaN(date.getTime()) ? "时间未知" : new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
+function legacyTextLength(value: unknown) {
+  return typeof value === "string" ? value.length.toLocaleString("zh-CN") : "字段无效";
+}
+
+function legacyTextPreview(value: unknown) {
+  return typeof value === "string" ? value : "（此字段格式无效；确认后会跳过该记录）";
+}
+
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError";
 }
@@ -244,7 +256,8 @@ async function readAssistantStream(response: Response, onEvent: (event: Record<s
   parseLine(buffer);
 }
 
-export function CoachAccountSessions() {
+export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
+  const knownQuestionIds = useMemo(() => new Set(knownQids), [knownQids]);
   const [status, setStatus] = useState<SiteAccountStatus | null>(null);
   const [account, setAccount] = useState<SiteAccount | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
@@ -265,6 +278,11 @@ export function CoachAccountSessions() {
   const [pendingDeparture, setPendingDeparture] = useState<PendingDeparture | null>(null);
   const [departureBusy, setDepartureBusy] = useState(false);
   const [recoveryStorageError, setRecoveryStorageError] = useState(false);
+  const [legacyPreview, setLegacyPreview] = useState<LegacyImportPreview | null>(null);
+  const [legacyImportResults, setLegacyImportResults] = useState<LegacyImportResult[]>([]);
+  const [legacyImportBusy, setLegacyImportBusy] = useState(false);
+  const [legacyImportError, setLegacyImportError] = useState("");
+  const [legacyImportConfirmOpen, setLegacyImportConfirmOpen] = useState(false);
   const epochRef = useRef(0);
   const conversationEpochRef = useRef(0);
   const conversationListEpochRef = useRef(0);
@@ -437,6 +455,11 @@ export function CoachAccountSessions() {
     setPendingDeparture(null);
     setDepartureBusy(false);
     setBusyAction(null);
+    setLegacyPreview(null);
+    setLegacyImportResults([]);
+    setLegacyImportBusy(false);
+    setLegacyImportError("");
+    setLegacyImportConfirmOpen(false);
     updateConversationQuery(null);
     return epochRef.current;
   }, [activateConversation, updateConversationQuery]);
@@ -695,6 +718,98 @@ export function CoachAccountSessions() {
     } finally {
       releaseRequest(controller);
       if (epoch === epochRef.current) setBusyAction(null);
+    }
+  }
+
+  async function previewLegacyImport() {
+    const targetAccount = accountRef.current;
+    if (!targetAccount || targetAccount.authMethod !== "oauth" || legacyImportBusy) return;
+    const epoch = epochRef.current;
+    setLegacyImportBusy(true);
+    setLegacyImportError("");
+    setLegacyImportResults([]);
+    try {
+      const records = await getLegacyCoachConversationsSnapshot();
+      if (epoch !== epochRef.current || accountRef.current?.id !== targetAccount.id || accountRef.current.authMethod !== "oauth") return;
+      setLegacyPreview({
+        accountId: targetAccount.id,
+        records: records as LegacyPreviewRecord[],
+      });
+    } catch (cause) {
+      if (epoch === epochRef.current && accountRef.current?.id === targetAccount.id) {
+        setLegacyImportError(cause instanceof Error ? cause.message : "无法读取本设备旧版 AI 对话。");
+      }
+    } finally {
+      if (epoch === epochRef.current) setLegacyImportBusy(false);
+    }
+  }
+
+  async function confirmLegacyImport() {
+    const preview = legacyPreview;
+    if (!preview || legacyImportBusy || accountRef.current?.id !== preview.accountId || accountRef.current.authMethod !== "oauth") {
+      setLegacyPreview(null);
+      setLegacyImportConfirmOpen(false);
+      return;
+    }
+    setLegacyImportConfirmOpen(false);
+    setLegacyImportBusy(true);
+    setLegacyImportError("");
+    setLegacyImportResults([]);
+    const epoch = epochRef.current;
+    const controller = registerRequest();
+    const combinedResults: LegacyImportResult[] = [];
+    try {
+      for (let offset = 0; offset < preview.records.length; offset += 20) {
+        if (epoch !== epochRef.current || accountRef.current?.id !== preview.accountId || controller.signal.aborted) {
+          setLegacyPreview(null);
+          break;
+        }
+        const batch = preview.records.slice(offset, offset + 20);
+        const records = batch.map((record) => ({
+          sourceId: record.conversationId,
+          qid: record.qid,
+          attemptId: record.attemptId,
+          contentVersion: record.contentVersion,
+          mode: record.mode,
+          model: record.model,
+          userInput: record.userInput,
+          assistantOutput: record.assistantOutput,
+          status: record.status,
+          startedAt: record.startedAt,
+          updatedAt: record.updatedAt,
+        }));
+        const response = await requestJson<{ results: LegacyImportResult[] }>(
+          "/api/coach/conversations/legacy-import",
+          { method: "POST", body: { records }, signal: controller.signal, accountId: preview.accountId },
+        );
+        if (!Array.isArray(response.results) || response.results.length !== batch.length) {
+          throw new Error("服务器没有返回完整的逐条导入结果。");
+        }
+        for (const result of response.results) {
+          if (!result || !Number.isInteger(result.index) || result.index < 0 || result.index >= batch.length
+            || !["imported", "already_imported", "conflict", "invalid", "failed"].includes(result.status)) {
+            throw new Error("服务器返回了无法识别的逐条导入结果。");
+          }
+          combinedResults.push({ index: offset + result.index, status: result.status });
+        }
+        setLegacyImportResults([...combinedResults]);
+      }
+      if (epoch === epochRef.current && accountRef.current?.id === preview.accountId) {
+        setNotice("旧版对话导入已完成；本设备 IndexedDB 原记录仍保留。");
+      }
+    } catch (cause) {
+      if (isAbortError(cause)) return;
+      if (cause instanceof AccountApiError && cause.status === 409 && cause.code === "account_changed") {
+        setLegacyPreview(null);
+        reportError(cause, epoch);
+        return;
+      }
+      if (epoch === epochRef.current && accountRef.current?.id === preview.accountId) {
+        setLegacyImportError(cause instanceof Error ? cause.message : "旧版对话导入没有完成。可重新确认，已保存项目会安全识别为重复项。");
+      }
+    } finally {
+      releaseRequest(controller);
+      if (epoch === epochRef.current) setLegacyImportBusy(false);
     }
   }
 
@@ -1184,6 +1299,17 @@ export function CoachAccountSessions() {
 
   const providerLabels: Record<SocialProvider, string> = { github: "GitHub", google: "Google" };
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? null;
+  const currentLegacyPreview = account?.authMethod === "oauth" && legacyPreview?.accountId === account.id ? legacyPreview : null;
+  const legacyPreviewRecords = currentLegacyPreview?.records ?? [];
+  const unknownLegacyQids = [...new Set(legacyPreviewRecords.filter((record) => !knownQuestionIds.has(record.qid)).map((record) => typeof record.qid === "string" ? record.qid : ""))];
+  const legacyDates = legacyPreviewRecords.map((record) => Date.parse(record.startedAt)).filter(Number.isFinite);
+  const legacyDateRange = legacyDates.length > 0
+    ? `${formatDate(new Date(legacyDates.reduce((minimum, value) => Math.min(minimum, value), Infinity)).toISOString())} – ${formatDate(new Date(legacyDates.reduce((maximum, value) => Math.max(maximum, value), -Infinity)).toISOString())}`
+    : "时间未知";
+  const legacyImportCounts = legacyImportResults.reduce<Record<LegacyImportResult["status"], number>>((counts, result) => {
+    counts[result.status] += 1;
+    return counts;
+  }, { imported: 0, already_imported: 0, conflict: 0, invalid: 0, failed: 0 });
 
   return (
     <div className="coach-account-page">
@@ -1225,6 +1351,61 @@ export function CoachAccountSessions() {
               </Button>
             </CardContent>
           </Card>
+
+          {account.authMethod === "oauth" && (
+            <Card className="coach-account-legacy-import" data-testid="legacy-import">
+              <CardHeader>
+                <CardTitle><DatabaseBackup size={17} aria-hidden="true" />导入本设备旧版 AI 对话</CardTitle>
+                <p>先在浏览器本地读取预览；只有再次确认后才会发送到当前站点账号。原 IndexedDB 记录不会修改或删除。</p>
+              </CardHeader>
+              <CardContent>
+                <Button type="button" variant="outline" onClick={() => void previewLegacyImport()} disabled={legacyImportBusy || sessionLoading} data-testid="legacy-import-preview-button">
+                  {legacyImportBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
+                  读取本地预览
+                </Button>
+                {currentLegacyPreview && (
+                  <div className="coach-account-legacy-preview" data-testid="legacy-import-preview">
+                    <p>共 {legacyPreviewRecords.length.toLocaleString("zh-CN")} 条；题号未关联 {unknownLegacyQids.length.toLocaleString("zh-CN")} 种；日期范围 {legacyDateRange}。每批最多 20 条；用户输入最多 12,000 字，助手内容最多 100,000 字。</p>
+                    {legacyPreviewRecords.some((record) => record.status === "pending" || record.status === "streaming") && (
+                      <p>其中 {legacyPreviewRecords.filter((record) => record.status === "pending" || record.status === "streaming").length} 条旧待处理/流式记录会作为历史中断内容导入，不会恢复或生成。</p>
+                    )}
+                    {unknownLegacyQids.length > 0 && <p>未关联题号会原样保留：{unknownLegacyQids.slice(0, 12).map((qid) => qid || "（空题号）").join("、")}{unknownLegacyQids.length > 12 ? " 等" : ""}</p>}
+                    {legacyPreviewRecords.length === 0 ? <p>本设备没有旧版 AI 对话。</p> : (
+                      <ul className="coach-account-legacy-preview-list">
+                        {legacyPreviewRecords.slice(0, 30).map((record) => (
+                          <li key={record.conversationId}>
+                            <strong>{knownQuestionIds.has(record.qid) ? `题号 ${record.qid}` : `未关联题号 ${record.qid || "（空题号）"}`}</strong>
+                            <span>{record.status === "pending" || record.status === "streaming" ? `原状态 ${record.status} · 导入后标记中断` : `历史状态 ${record.status}`}</span>
+                            <small>{formatDate(record.startedAt)} · 用户 {legacyTextLength(record.userInput)} 字 · 助手 {legacyTextLength(record.assistantOutput)} 字</small>
+                            <details className="coach-account-legacy-record-content">
+                              <summary>展开本地文本预览</summary>
+                              <div><strong>用户输入</strong><pre>{legacyTextPreview(record.userInput)}</pre></div>
+                              <div><strong>助手回复</strong><pre>{legacyTextPreview(record.assistantOutput)}</pre></div>
+                            </details>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {legacyPreviewRecords.length > 30 && <p>列表显示前 30 条，确认后会按 20 条一批导入全部 {legacyPreviewRecords.length} 条。</p>}
+                    {legacyPreviewRecords.length > 0 && (
+                      <Button type="button" onClick={() => setLegacyImportConfirmOpen(true)} disabled={legacyImportBusy} data-testid="legacy-import-confirm-open">
+                        确认导入 {legacyPreviewRecords.length} 条
+                      </Button>
+                    )}
+                    {legacyImportResults.length > 0 && (
+                      <div className="coach-account-legacy-results" role="status" data-testid="legacy-import-results">
+                        <p>已导入 {legacyImportCounts.imported} 条；已存在 {legacyImportCounts.already_imported} 条；冲突 {legacyImportCounts.conflict} 条；无效 {legacyImportCounts.invalid} 条；失败 {legacyImportCounts.failed} 条。</p>
+                        {legacyImportResults.filter((result) => result.status === "conflict" || result.status === "invalid" || result.status === "failed").slice(0, 10).map((result) => (
+                          <p key={result.index}>第 {result.index + 1} 条：{result.status === "conflict" ? "目标内容冲突，未覆盖" : result.status === "invalid" ? "字段不符合导入限制" : "保存失败，可重新确认安全重试"}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {legacyImportError && <p className="coach-account-inline-error" role="alert" data-testid="legacy-import-error"><AlertCircle size={15} aria-hidden="true" />{legacyImportError}</p>}
+              </CardContent>
+            </Card>
+          )}
 
           <div className="coach-account-session-layout">
             <Card className="coach-account-session-list-card">
@@ -1353,9 +1534,31 @@ export function CoachAccountSessions() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <AlertDialog
+        open={legacyImportConfirmOpen && currentLegacyPreview !== null}
+        onOpenChange={(open) => {
+          if (!legacyImportBusy) setLegacyImportConfirmOpen(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认导入旧版 AI 对话？</AlertDialogTitle>
+            <AlertDialogDescription>
+              将把本设备预览的 {legacyPreviewRecords.length} 条对话写入账号 {account?.email}（账号 ID：{currentLegacyPreview?.accountId}）。每批最多 20 条；超出字段限制的记录会标为无效，目标冲突不会覆盖。旧 IndexedDB 原记录会保留。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button type="button" variant="outline" onClick={() => setLegacyImportConfirmOpen(false)} disabled={legacyImportBusy} data-testid="legacy-import-cancel">返回预览</Button>
+            <Button type="button" onClick={() => void confirmLegacyImport()} disabled={legacyImportBusy || !currentLegacyPreview} data-testid="legacy-import-confirm">
+              {legacyImportBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <DatabaseBackup size={14} aria-hidden="true" />}
+              确认并上传到此账号
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {error && <p className="coach-account-inline-error" role="alert"><AlertCircle size={15} aria-hidden="true" />{error}</p>}
       {notice && <p className="coach-account-inline-notice" role="status"><CheckCircle2 size={15} aria-hidden="true" />{notice}</p>}
-      {status && <p className="coach-account-storage-note">旧版 IndexedDB 学习记录仍保留在本设备，本页不读取、导入或删除它。</p>}
+      {status && <p className="coach-account-storage-note">旧版 IndexedDB 学习记录仍保留在本设备；账号迁移需要手动预览并单独确认。</p>}
     </div>
   );
 }

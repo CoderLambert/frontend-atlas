@@ -17,6 +17,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "test:server-chat": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-server-chat.mjs",
+    "test:legacy-import": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-legacy-import.mjs",
     "test:assistant-run": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-assistant-run.mjs",
     "test:coach-account-browser": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-coach-account-browser.mjs",
     "test:coach-assistant-browser": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-coach-assistant-browser.mjs",

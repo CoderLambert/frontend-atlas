@@ -14,6 +14,7 @@ export const coachConversations = sqliteTable("coach_conversations", {
   title: text("title").notNull().default("新对话"),
   qid: text("qid"),
   contentVersion: text("content_version"),
+  legacyMetadataJson: text("legacy_metadata_json"),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 }, (table) => [

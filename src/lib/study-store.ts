@@ -32,7 +32,7 @@ export type Draft = {
 };
 export type Preferences = { key: string; value: unknown; updatedAt: string };
 export type CoachMode = "hint" | "explain" | "critique";
-export type CoachConversationStatus = "pending" | "complete" | "interrupted" | "failed" | "cancelled";
+export type CoachConversationStatus = "pending" | "streaming" | "complete" | "interrupted" | "failed" | "cancelled";
 export type CoachConversation = {
   conversationId: string;
   qid: string;
@@ -150,6 +150,71 @@ export function getStudySnapshot(): Promise<StudySnapshot> {
     for (const request of [attemptsRequest, draftsRequest, preferencesRequest, coachConversationsRequest]) {
       request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("无法读取本设备学习记录。"));
     }
+  });
+}
+
+/** Read only the legacy conversation store without upgrading or writing to the old database. */
+export function getLegacyCoachConversationsSnapshot(): Promise<CoachConversation[]> {
+  if (typeof window === "undefined" || !window.indexedDB) {
+    return Promise.reject(new Error("此浏览器无法读取本设备数据库。"));
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.open(DATABASE_NAME);
+    let abortedEmptyDatabaseUpgrade = false;
+    request.onupgradeneeded = () => {
+      abortedEmptyDatabaseUpgrade = true;
+      try { request.transaction?.abort(); } catch {}
+    };
+    request.onerror = () => {
+      if (abortedEmptyDatabaseUpgrade && request.error?.name === "AbortError") {
+        resolve([]);
+        return;
+      }
+      reject(request.error instanceof Error ? request.error : new Error("无法读取本设备 AI 对话。"));
+    };
+    request.onblocked = () => reject(new Error("本设备数据库正在被另一个标签页占用。关闭旧标签页后再试。"));
+    request.onsuccess = () => {
+      const database = request.result;
+      database.onversionchange = () => database.close();
+      if (!database.objectStoreNames.contains(COACH_CONVERSATIONS)) {
+        database.close();
+        resolve([]);
+        return;
+      }
+
+      let transaction: IDBTransaction;
+      try {
+        transaction = database.transaction([COACH_CONVERSATIONS], "readonly");
+      } catch (cause) {
+        database.close();
+        reject(cause instanceof Error ? cause : new Error("无法读取本设备 AI 对话。"));
+        return;
+      }
+      const read = transaction.objectStore(COACH_CONVERSATIONS).getAll();
+      let records: CoachConversation[] = [];
+      let hasResult = false;
+      read.onsuccess = () => {
+        records = read.result as CoachConversation[];
+        hasResult = true;
+      };
+      read.onerror = () => {
+        try { transaction.abort(); } catch {}
+      };
+      transaction.oncomplete = () => {
+        database.close();
+        if (hasResult) resolve(records);
+        else reject(new Error("无法读取本设备 AI 对话。"));
+      };
+      transaction.onerror = () => {
+        database.close();
+        reject(transaction.error instanceof Error ? transaction.error : new Error("无法读取本设备 AI 对话。"));
+      };
+      transaction.onabort = () => {
+        database.close();
+        reject(transaction.error instanceof Error ? transaction.error : new Error("无法读取本设备 AI 对话。"));
+      };
+    };
   });
 }
 

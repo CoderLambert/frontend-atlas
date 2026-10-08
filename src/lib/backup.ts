@@ -3,7 +3,7 @@ import type { Assessment, Attempt, BackupFile, CoachConversation, CoachConversat
 export const MAX_BACKUP_BYTES = 10 * 1024 * 1024;
 const ratings = new Set<SelfRating>(["not_yet", "incomplete", "clear"]);
 const coachModes = new Set<CoachMode>(["hint", "explain", "critique"]);
-const conversationStatuses = new Set<CoachConversationStatus>(["pending", "complete", "interrupted", "failed", "cancelled"]);
+const conversationStatuses = new Set<CoachConversationStatus>(["pending", "streaming", "complete", "interrupted", "failed", "cancelled"]);
 const validId = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9_-]{1,120}$/.test(value);
 const validDate = (value: unknown) => {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;

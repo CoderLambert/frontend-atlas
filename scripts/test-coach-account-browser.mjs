@@ -14,7 +14,7 @@ const databasePath = join(tempRoot, "account.sqlite");
 const browserProfilePath = join(tempRoot, "chromium-profile");
 const migrationPath = join(projectRoot, "src/lib/db/migrations");
 const chromiumPath = process.env.CHROMIUM_PATH || "/usr/bin/chromium";
-const screenshotPath = "/home/lambert/Documents/Codex/2026-10-08/task-3/frontend-atlas-coach-account-mock-browser.png";
+const screenshotPath = join(tempRoot, "coach-account-mock-browser.png");
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 let nextProcess = null;
@@ -218,6 +218,21 @@ async function databaseLegacyRecord(browser) {
   })`);
 }
 
+async function databaseLegacyCoachConversation(browser) {
+  return browser.evaluate(`new Promise((resolve, reject) => {
+    const request = indexedDB.open("zhixu-study");
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const database = request.result;
+      const transaction = database.transaction("coachConversations", "readonly");
+      const get = transaction.objectStore("coachConversations").get("legacy-chat-preview");
+      get.onsuccess = () => resolve(get.result ?? null);
+      get.onerror = () => reject(get.error);
+      transaction.oncomplete = () => database.close();
+    };
+  })`);
+}
+
 try {
   assert.ok(existsSync(chromiumPath), `Chromium binary exists at ${chromiumPath}`);
   seedDatabase();
@@ -281,8 +296,21 @@ try {
     request.onerror = () => reject(request.error);
     request.onsuccess = () => {
       const database = request.result;
-      const transaction = database.transaction("attempts", "readwrite");
+      const transaction = database.transaction(["attempts", "coachConversations"], "readwrite");
       transaction.objectStore("attempts").put({ attemptId: "legacy-preserve", qid: "D13", originalAnswer: "legacy-only" });
+      transaction.objectStore("coachConversations").put({
+        conversationId: "legacy-chat-preview",
+        qid: "UNLISTED-QID-EXACT",
+        attemptId: "legacy-attempt-4",
+        contentVersion: "legacy-content-v4",
+        mode: "explain",
+        model: "local-history-model",
+        userInput: "Keep this old prompt.",
+        assistantOutput: "Keep this partial old reply.",
+        status: "streaming",
+        startedAt: "2024-01-02T03:04:05.000Z",
+        updatedAt: "2024-01-02T03:04:09.000Z",
+      });
       transaction.oncomplete = () => { database.close(); resolve(true); };
       transaction.onerror = () => reject(transaction.error);
     };
@@ -292,6 +320,85 @@ try {
   await browser.evaluate("document.querySelector('[data-testid=mock-login-a]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('mock-a@example.test')")), "mock account A login");
   assert.equal(databaseCounts().conversations, 0, "signing in does not import old local IndexedDB records");
+  assert.equal(await browser.evaluate("document.querySelector('[data-testid=legacy-import]') === null"), true, "local Mock accounts do not show the authenticated legacy-import UI");
+  const mockImportAttempt = await browser.evaluate(`fetch('/api/coach/conversations/legacy-import', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-frontend-atlas-request': '1', 'x-frontend-atlas-account-id': 'mock-user-a' },
+    body: JSON.stringify({ records: [{ sourceId: 'mock-must-not-import', qid: 'D13', attemptId: null, contentVersion: 'v1', mode: 'explain', model: 'mock', userInput: 'x', assistantOutput: 'y', status: 'complete', startedAt: '2024-01-02T03:04:05.000Z', updatedAt: '2024-01-02T03:04:06.000Z' }] }),
+  }).then(async (response) => ({ status: response.status, body: await response.json() }))`);
+  assert.equal(mockImportAttempt.status, 401, "the real import route rejects a valid local Mock cookie");
+
+  await browser.evaluate(`(() => {
+    window.__legacyNativeFetch = window.fetch.bind(window);
+    window.__legacyFakeAccountId = 'mock-user-a';
+    window.__legacyFakeOAuth = true;
+    window.__legacyImportCalls = 0;
+    window.__legacyImportExpectedAccount = null;
+    window.fetch = async (input, init = {}) => {
+      const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
+      const method = init.method ?? 'GET';
+      if (url.pathname === '/api/site-account' && method === 'GET') {
+        const response = await window.__legacyNativeFetch(input, init);
+        const data = await response.json();
+        if (data.account && window.__legacyFakeOAuth) {
+          data.account = { ...data.account, id: window.__legacyFakeAccountId, authMethod: 'oauth', email: window.__legacyFakeAccountId === 'mock-user-a' ? 'preview-a@example.test' : 'preview-b@example.test' };
+        }
+        return new Response(JSON.stringify(data), { status: response.status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+      }
+      if (url.pathname === '/api/coach/conversations/legacy-import' && method === 'POST') {
+        window.__legacyImportCalls += 1;
+        window.__legacyImportExpectedAccount = new Headers(init.headers).get('x-frontend-atlas-account-id');
+      }
+      return window.__legacyNativeFetch(input, init);
+    };
+  })()`);
+  await browser.evaluate("document.querySelector('[data-testid=refresh-session-list]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=legacy-import-preview-button]') !== null")), "the OAuth-only import panel for local-preview testing");
+  await browser.evaluate("document.querySelector('[data-testid=legacy-import-preview-button]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=legacy-import-preview]')?.innerText.includes('UNLISTED-QID-EXACT')")), "a local-only preview of the old conversation");
+  const localPreviewText = await browser.evaluate("document.querySelector('[data-testid=legacy-import-preview]').innerText");
+  assert.match(localPreviewText, /未关联题号 UNLISTED-QID-EXACT/u, "an unknown qid is shown as unlinked and remains exact");
+  assert.match(localPreviewText, /原状态 streaming · 导入后标记中断/u, "the preview explains that old streaming output will stay historical");
+  assert.equal(await browser.evaluate("window.__legacyImportCalls"), 0, "preview performs no network upload");
+  await browser.evaluate("document.querySelector('[data-testid=legacy-import-confirm-open]').click()");
+  await browser.evaluate("document.querySelector('[data-testid=legacy-import-cancel]').click()");
+  assert.equal(await browser.evaluate("window.__legacyImportCalls"), 0, "closing the confirmation dialog performs no upload");
+  await browser.evaluate("document.querySelector('[data-testid=legacy-import-confirm-open]').click()");
+  await browser.evaluate("window.__legacyFakeOAuth = false; document.querySelector('[data-testid=refresh-session-list]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('mock-a@example.test') && document.querySelector('[data-testid=legacy-import]') === null")), "the test returns to the real local Mock account before switching sessions");
+  await browser.evaluate("document.querySelector('[data-testid=site-account-sign-out]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=mock-login-b]') !== null")), "account A signs out");
+  await browser.evaluate("window.__legacyFakeAccountId = 'mock-user-b'; window.__legacyFakeOAuth = true; document.querySelector('[data-testid=mock-login-b]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('preview-b@example.test') && document.querySelector('[data-testid=legacy-import-preview]') === null")), "account B login clears the old local preview and confirmation");
+  assert.equal(await browser.evaluate("document.querySelector('[data-testid=legacy-import-confirm]') === null"), true, "account switch requires a fresh preview and confirmation");
+  assert.equal(await browser.evaluate("window.__legacyImportCalls"), 0, "a stale confirmation cannot upload after the account changes");
+  await browser.evaluate("document.querySelector('[data-testid=legacy-import-preview-button]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=legacy-import-preview]') !== null")), "fresh preview for the new account");
+  await browser.evaluate("document.querySelector('[data-testid=legacy-import-confirm-open]').click()");
+  await browser.evaluate("document.querySelector('[data-testid=legacy-import-confirm]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=legacy-import-error]') !== null")), "server rejection for the injected OAuth display identity without a Better Auth session");
+  assert.equal(await browser.evaluate("window.__legacyImportCalls"), 1, "upload begins only after the user explicitly confirms");
+  assert.equal(await browser.evaluate("window.__legacyImportExpectedAccount"), "mock-user-b", "the upload is bound to the previewed account id");
+  assert.deepEqual(await databaseLegacyCoachConversation(browser), {
+    conversationId: "legacy-chat-preview",
+    qid: "UNLISTED-QID-EXACT",
+    attemptId: "legacy-attempt-4",
+    contentVersion: "legacy-content-v4",
+    mode: "explain",
+    model: "local-history-model",
+    userInput: "Keep this old prompt.",
+    assistantOutput: "Keep this partial old reply.",
+    status: "streaming",
+    startedAt: "2024-01-02T03:04:05.000Z",
+    updatedAt: "2024-01-02T03:04:09.000Z",
+  }, "even a declined server import leaves the legacy IndexedDB record untouched");
+  assert.equal(databaseCounts().conversations, 0, "the temporary Mock session created no server-side imports");
+  await browser.evaluate("window.fetch = window.__legacyNativeFetch; document.querySelector('[data-testid=refresh-session-list]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('mock-b@example.test') && document.querySelector('[data-testid=legacy-import]') === null")), "restore real local Mock account B after testing OAuth-only UI");
+  await browser.evaluate("document.querySelector('[data-testid=site-account-sign-out]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=mock-login-a]') !== null")), "account B signs out");
+  await browser.evaluate("document.querySelector('[data-testid=mock-login-a]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('mock-a@example.test') && document.querySelector('[data-testid=legacy-import]') === null")), "restore the real local Mock account A before the remaining account regressions");
 
   const titleA = "A browser session";
   await browser.evaluate(setValueExpression("#account-session-title", titleA));
@@ -343,13 +450,13 @@ try {
     window.__holdAConversationDetailOnce = true;
     window.__heldAConversationDetailStarted = false;
     window.__releaseHeldAConversationDetail = null;
-    window.__holdNextConversationListSnapshot = true;
+    window.__holdNextConversationListSnapshot = false;
     window.__heldConversationListSnapshotStarted = false;
     window.__releaseHeldConversationListSnapshot = null;
     window.fetch = async (input, init = {}) => {
       const url = typeof input === "string" ? new URL(input, location.origin) : new URL(input.url);
       const method = init.method ?? "GET";
-      if (window.__holdAConversationDetailOnce && url.pathname === ${JSON.stringify(`/api/coach/conversations/${conversationId}`)} && method === "GET") {
+      if (window.__holdAConversationDetailOnce && (url.pathname.endsWith("/") ? url.pathname.slice(0, -1) : url.pathname) === ${JSON.stringify(`/api/coach/conversations/${conversationId}`)} && method === "GET") {
         window.__holdAConversationDetailOnce = false;
         window.__heldAConversationDetailStarted = true;
         return new Promise((resolve, reject) => {
@@ -363,7 +470,7 @@ try {
           };
         });
       }
-      if (window.__holdNextConversationListSnapshot && url.pathname === "/api/coach/conversations" && method === "GET") {
+      if (window.__holdNextConversationListSnapshot && (url.pathname.endsWith("/") ? url.pathname.slice(0, -1) : url.pathname) === "/api/coach/conversations" && method === "GET") {
         window.__holdNextConversationListSnapshot = false;
         const response = await nativeFetch(input, init);
         window.__heldConversationListSnapshotStarted = true;
@@ -374,9 +481,9 @@ try {
       return nativeFetch(input, init);
     };
   })()`);
-  await browser.evaluate(`document.querySelector('[data-testid="conversation-${conversationId}"]').click()`);
-  await waitFor(() => browser.evaluate(shellReadyExpression("window.__heldAConversationDetailStarted")), "A's delayed detail request");
   await browser.evaluate("document.querySelector('[data-testid=refresh-session-list]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("window.__heldAConversationDetailStarted")), "A's delayed detail request");
+  await browser.evaluate("window.__holdNextConversationListSnapshot = true; document.querySelector('[data-testid=refresh-session-list]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("window.__heldConversationListSnapshotStarted")), "a pre-create conversation-list snapshot");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=create-conversation]')?.disabled === false")), "account refresh to finish before creating B");
   await browser.evaluate(setValueExpression("#account-session-title", titleCreatedDuringPendingReads));
@@ -540,10 +647,11 @@ try {
 
   const legacyRecord = await databaseLegacyRecord(browser);
   assert.equal(legacyRecord?.originalAnswer, "legacy-only", "the old IndexedDB learning record remains on the device");
+  assert.equal((await databaseLegacyCoachConversation(browser))?.status, "streaming", "the old IndexedDB chat remains unchanged after preview, account switches, and declined upload");
   assert.equal(databaseCounts().conversations, 3, "old IndexedDB data was not automatically imported into SQLite");
 
   browser.close();
-  process.stdout.write("coach account browser: delayed detail/list invalidation, cross-tab Mock identity synchronization, expected-account write guard, real SQLite persistence, A/B isolation, refresh restore, logout cache clearing, legacy IndexedDB preservation, and idempotent retry passed\n");
+  process.stdout.write("coach account browser: local-only legacy preview, explicit confirmation, account-switch reset, Mock-auth import rejection, IndexedDB preservation, delayed response invalidation, SQLite owner isolation, and idempotent retry passed\n");
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
   process.exitCode = 1;
