@@ -205,12 +205,105 @@ try {
       return nativeSetItem.call(this, key, value);
     };
   })()`);
+  await browser.evaluate(`(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.__raceNativeFetch = nativeFetch;
+    window.__holdFirstAssistantDelta = true;
+    window.__raceAssistantMessageId = null;
+    window.__raceHeldDeltaCount = 0;
+    window.__raceTerminalDelivered = false;
+    window.__releaseRaceDelta = null;
+    window.fetch = async (input, init = {}) => {
+      const response = await nativeFetch(input, init);
+      const url = typeof input === "string" ? new URL(input, location.origin) : new URL(input.url);
+      if (!window.__holdFirstAssistantDelta || init.method !== "POST" || !url.pathname.endsWith("/runs") || !response.body) return response;
+      window.__holdFirstAssistantDelta = false;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      const encoder = new TextEncoder();
+      let buffered = "";
+      let deltaCount = 0;
+      const body = new ReadableStream({
+        async pull(controller) {
+          try {
+            while (true) {
+              const newline = buffered.indexOf("\\n");
+              if (newline < 0) {
+                const { value, done } = await reader.read();
+                buffered += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+                if (done && !buffered) { controller.close(); return; }
+                if (done && buffered.indexOf("\\n") < 0) {
+                  const line = buffered;
+                  buffered = "";
+                  if (!line) { controller.close(); return; }
+                  const event = JSON.parse(line);
+                  if (event.type === "started") window.__raceAssistantMessageId = event.assistantMessage.id;
+                  if (event.type === "terminal") window.__raceTerminalDelivered = true;
+                  controller.enqueue(encoder.encode(line + "\\n"));
+                  controller.close();
+                  return;
+                }
+                continue;
+              }
+              const line = buffered.slice(0, newline);
+              buffered = buffered.slice(newline + 1);
+              if (!line) continue;
+              const event = JSON.parse(line);
+              if (event.type === "started") window.__raceAssistantMessageId = event.assistantMessage.id;
+              if (event.type === "delta" && ++deltaCount === 5) {
+                window.__raceHeldDeltaCount = deltaCount;
+                await new Promise((resolve) => { window.__releaseRaceDelta = resolve; });
+                window.__releaseRaceDelta = null;
+              }
+              if (event.type === "terminal") window.__raceTerminalDelivered = true;
+              controller.enqueue(encoder.encode(line + "\\n"));
+              return;
+            }
+          } catch (error) {
+            controller.error(error);
+          }
+        },
+        cancel(reason) { void reader.cancel(reason); },
+      });
+      return new Response(body, { status: response.status, statusText: response.statusText, headers: response.headers });
+    };
+  })()`);
   await browser.evaluate(setValueExpression("#account-message", "请演示一次本机助手流式传输。"));
   await browser.evaluate("document.querySelector('[data-testid=send-message]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-message-status=streaming]') !== null")), "streaming assistant message");
+  await waitFor(() => browser.evaluate(shellReadyExpression("window.__raceHeldDeltaCount === 5 && window.__raceAssistantMessageId !== null")), "pause one assistant delta while the server continues persisting");
+  const raceAssistantMessageId = await browser.evaluate("window.__raceAssistantMessageId");
+  const raceDatabase = openSqliteDatabase(databasePath);
+  let raceSnapshot;
+  try {
+    await waitFor(() => {
+      raceSnapshot = raceDatabase.client.prepare("SELECT content, status FROM coach_messages WHERE id = ?").get(raceAssistantMessageId);
+      return raceSnapshot?.status === "complete" && raceSnapshot.content.length > 64;
+    }, "SQLite advances beyond the held stream offset", 15_000);
+  } finally {
+    raceDatabase.client.close();
+  }
+  await browser.evaluate("window.dispatchEvent(new Event('focus'))");
+  const raceSnapshotText = await waitFor(() => browser.evaluate(`(() => {
+    const message = document.querySelector('[data-message-id=${JSON.stringify(raceAssistantMessageId)}] .coach-markdown');
+    return message?.innerText.includes("Mock 运行结束后") ? message.innerText : null;
+  })()`), "focus refresh renders the newer SQLite snapshot", 15_000);
+  await browser.evaluate("window.__releaseRaceDelta?.()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("window.__raceTerminalDelivered === true && document.querySelector('[data-testid=cancel-assistant-run]') === null")), "the delayed stream catches up and reaches terminal state", 15_000);
+  const raceFinalText = await browser.evaluate(`document.querySelector('[data-message-id=${JSON.stringify(raceAssistantMessageId)}] .coach-markdown')?.innerText ?? null`);
+  assert.equal(raceFinalText, raceSnapshotText, "deltas already represented by the same SQLite message snapshot are not appended again");
+  assert.equal(raceSnapshot.status, "complete", "the database snapshot belongs to the completed run whose stream events were delayed");
+  await browser.evaluate("window.fetch = window.__raceNativeFetch ?? window.fetch");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('.coach-account-messages li[data-message-status=complete] .coach-markdown') !== null")), "completed assistant message");
   const initialRecoveryRecord = await browser.evaluate("window.__lastAssistantRecovery");
   assert.ok(initialRecoveryRecord?.content.includes("Mock 运行结束后"), "the real streamed assistant content was captured in the local recovery buffer");
+  const firstConversationId = initialRecoveryRecord.conversationId;
+  await browser.evaluate(setValueExpression("#account-session-title", "A separate conversation"));
+  await browser.evaluate("document.querySelector('[data-testid=create-conversation]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=conversation-messages]') !== null && document.querySelectorAll('[data-testid=saved-message]').length === 0")), "a new conversation starts with no messages from the first conversation");
+  assert.equal(await browser.evaluate("document.querySelector('[data-testid=conversation-messages]')?.innerText.includes('本机 Mock 流式演示') ?? false"), false, "the focused SQLite snapshot remains scoped to its original conversation");
+  await browser.evaluate(`document.querySelector('[data-testid="conversation-${firstConversationId}"]').click()`);
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=conversation-messages]')?.innerText.includes('Mock 运行结束后')")), "switching back restores the first conversation without duplication");
   process.stdout.write("assistant browser: first streaming response completed\n");
   const acceptedUi = await browser.evaluate(`(() => ({
     mockLabel: document.body.innerText.includes("本机 Mock 体验"),

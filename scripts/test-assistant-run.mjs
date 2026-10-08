@@ -173,6 +173,25 @@ try {
   assert.equal(service.find("user-a", doubleSubmitConversation.id).messages.length, 2, "one atomic user/assistant message pair is persisted");
   assert.equal(service.getAssistantRun("user-b", doubleSubmitConversation.id, duplicate.run.id), null, "another account cannot read the run");
 
+  const repeatedChunkConversation = conversation(service, "repeated-chunk-offsets");
+  const repeatedChunkProvider = createProvider(async function* () {
+    yield "ha";
+    yield "ha";
+  });
+  const repeatedChunkManager = new AssistantRunManager(service);
+  const repeatedChunkHandlers = makeHandlers(service, repeatedChunkProvider, repeatedChunkManager);
+  const repeatedChunkResponse = await repeatedChunkHandlers.create(
+    makeRequest("user-a", "POST", "/runs", { clientRunId: "repeated-chunk-offsets-key", content: "Preserve equal chunks at distinct offsets." }),
+    context(repeatedChunkConversation.id),
+  );
+  const repeatedChunkEvents = await readAllEvents(repeatedChunkResponse);
+  assert.deepEqual(
+    repeatedChunkEvents.filter((event) => event.type === "delta").map(({ offset, text }) => ({ offset, text })),
+    [{ offset: 0, text: "ha" }, { offset: 2, text: "ha" }],
+    "equal adjacent text chunks remain distinct because each delta carries its generated-content offset",
+  );
+  assert.equal(service.find("user-a", repeatedChunkConversation.id).messages.at(-1).content, "haha");
+
   const terminalTailConversation = conversation(service, "terminal-tail-idempotency");
   const terminalTailCreated = service.createAssistantRun("user-a", terminalTailConversation.id, {
     clientRunId: "terminal-tail-idempotency-key",

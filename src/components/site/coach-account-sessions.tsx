@@ -487,6 +487,26 @@ export function CoachAccountSessions() {
       if (!isCurrentRequest() || controller.signal.aborted || response.conversation.id !== conversationId) return;
       const restored = restoreUnsavedAssistantMessages(response.conversation, accountId, recoveryBufferRef.current);
       const activeRun = activeRunRef.current;
+      if (activeRun?.accountId === accountId && activeRun.conversationId === conversationId) {
+        const snapshotAssistant = restored.conversation.messages.find((message) => message.id === activeRun.assistantMessageId);
+        if (snapshotAssistant?.role === "assistant"
+          && snapshotAssistant.content.length > activeRun.content.length
+          && snapshotAssistant.content.startsWith(activeRun.content)) {
+          activeRun.content = snapshotAssistant.content;
+          storeRecovery({
+            version: 1,
+            accountId: activeRun.accountId,
+            conversationId: activeRun.conversationId,
+            messageId: activeRun.assistantMessageId,
+            clientMessageId: activeRun.clientMessageId,
+            userContent: activeRun.userContent,
+            content: activeRun.content,
+            status: "streaming",
+            retryMode: "same",
+            createdAt: activeRun.createdAt,
+          });
+        }
+      }
       setConversation((current) => {
         if (current?.id !== conversationId) return restored.conversation;
         const currentMessages = new Map(current.messages.map((message) => [message.id, message]));
@@ -533,7 +553,7 @@ export function CoachAccountSessions() {
       releaseRequest(controller);
       if (isCurrentRequest()) setDetailLoading(false);
     }
-  }, [registerRequest, releaseRequest, reportError]);
+  }, [registerRequest, releaseRequest, reportError, storeRecovery]);
 
   const loadConversations = useCallback(async (epoch: number, accountId: string) => {
     const listEpoch = ++conversationListEpochRef.current;
@@ -957,7 +977,24 @@ export function CoachAccountSessions() {
         } else if (event.type === "delta" && typeof event.text === "string" && typeof event.runId === "string") {
           const activeRun = activeRunRef.current;
           if (!activeRun || activeRun.runId !== event.runId || activeRun.conversationId !== conversationId) return;
-          activeRun.content += event.text;
+          const offset = event.offset;
+          if (typeof offset !== "number" || !Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(offset + event.text.length)) {
+            setMessageError("助手流缺少有效内容位置；当前回复仍已保留，请刷新会话后重试。");
+            return;
+          }
+          if (offset > activeRun.content.length) {
+            setMessageError("助手流内容出现缺口；当前回复仍已保留，请刷新会话后重试。");
+            return;
+          }
+          const overlapLength = Math.min(event.text.length, activeRun.content.length - offset);
+          if (overlapLength > 0
+            && activeRun.content.slice(offset, offset + overlapLength) !== event.text.slice(0, overlapLength)) {
+            setMessageError("助手流与已恢复的回复快照不一致；当前快照仍已保留。");
+            return;
+          }
+          const unseenText = event.text.slice(overlapLength);
+          if (!unseenText) return;
+          activeRun.content += unseenText;
           storeRecovery({
             version: 1,
             accountId: activeRun.accountId,
@@ -975,7 +1012,7 @@ export function CoachAccountSessions() {
             return {
               ...current,
               messages: current.messages.map((message) => message.id === activeRun.assistantMessageId
-                ? { ...message, content: message.content + event.text as string, status: "streaming" }
+                ? { ...message, content: activeRun.content, status: "streaming" }
                 : message),
             };
           });

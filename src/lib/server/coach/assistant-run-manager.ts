@@ -16,7 +16,7 @@ type ObservedIteratorNext<T> =
 
 export type AssistantRunEvent =
   | { type: "started"; runId: string; userMessage: unknown; assistantMessage: unknown; duplicate: false }
-  | { type: "delta"; runId: string; text: string }
+  | { type: "delta"; runId: string; offset: number; text: string }
   | ({ type: "terminal"; runId: string } & RunCompletion);
 
 type IteratorResultEvent<T> = IteratorResult<T>;
@@ -222,10 +222,11 @@ export class AssistantRunManager {
         if (typeof text !== "string" || !text) continue;
         totalLength += text.length;
         if (totalLength > 500_000) throw new Error("Assistant output exceeded the local limit.");
+        const offset = generatedContent.length;
         generatedContent += text;
         pendingContent += text;
         contentPersisted = false;
-        activeRun.channel.push({ type: "delta", runId: input.runId, text });
+        activeRun.channel.push({ type: "delta", runId: input.runId, offset, text });
         if (pendingContent.length >= 256 || Date.now() - lastPersistAt >= 100) persistPendingContent();
       }
 
