@@ -17,7 +17,7 @@ import { CodeBlock } from "@/components/ui/code-block";
 import { QuestionPrivateEditor, type QuestionPrivateSelection } from "@/components/site/question-private-editor";
 import { checkpointsFor, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
 import { contentBlocksToMarkdown } from "@/lib/question-private-overrides";
-import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type SelfRating } from "@/lib/study-store";
+import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type Draft, type SelfRating } from "@/lib/study-store";
 
 type PracticeQuestion = MasterQuestion | CompanyQuestion;
 type SaveState = "loading" | "ready" | "saving" | "saved" | "error";
@@ -113,6 +113,8 @@ export function QuestionPractice({
   const [privateSelection, setPrivateSelection] = useState<QuestionPrivateSelection>(null);
   const [loadedStudyKey, setLoadedStudyKey] = useState<string | null>(null);
   const studyEpoch = useRef(0);
+  const pendingAnswerRef = useRef<Attempt | null>(null);
+  const pendingRevisionRef = useRef<Draft | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const answerTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -187,7 +189,7 @@ export function QuestionPractice({
       const latest = snapshot.attempts
         .filter((item) => item.qid === question.qid && (studyOwnerId ? item.ownerUserId === studyOwnerId : !item.ownerUserId))
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null;
-      const draft = latest ? snapshot.drafts.find((item) => item.qid === question.qid && item.attemptId === latest.attemptId) : null;
+      const draft = latest ? snapshot.drafts.find((item) => item.qid === question.qid && item.attemptId === latest.attemptId && (studyOwnerId ? item.ownerUserId === studyOwnerId : !item.ownerUserId)) : null;
       if (latest) {
         setStoredSnapshot(true);
         setAttempt(latest);
@@ -219,6 +221,13 @@ export function QuestionPractice({
     return () => {
       active = false;
       studyEpoch.current += 1;
+    // Flush under the captured owner before switching pages/accounts; do not show stale completion.
+    const pendingAnswer = pendingAnswerRef.current;
+    const pendingRevision = pendingRevisionRef.current;
+    pendingAnswerRef.current = null;
+    pendingRevisionRef.current = null;
+    if (pendingAnswer) void saveAttempt(pendingAnswer).catch(() => {});
+    if (pendingRevision) void saveDraft(pendingRevision).catch(() => {});
       if (saveTimer.current) clearTimeout(saveTimer.current);
       if (revisionTimer.current) clearTimeout(revisionTimer.current);
       saveTimer.current = null;
@@ -255,10 +264,16 @@ export function QuestionPractice({
     setSaveState("saving");
     setSaveError("");
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { void persistAttempt(next); }, 450);
+    pendingAnswerRef.current = next;
+    saveTimer.current = setTimeout(() => {
+      pendingAnswerRef.current = null;
+      void persistAttempt(next);
+    }, 450);
   }
 
   async function handleReveal(skip: boolean) {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    pendingAnswerRef.current = null;
     const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion, answer, studyOwnerId);
     const now = new Date().toISOString();
     const next = { ...base, originalAnswer: answer, skipped: skip, revealedAt: now, updatedAt: now };
@@ -268,6 +283,10 @@ export function QuestionPractice({
   }
 
   function handleNewAttempt() {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const pending = pendingAnswerRef.current;
+    pendingAnswerRef.current = null;
+    if (pending) void saveAttempt(pending).catch(() => {});
     const next = newAttempt(question.qid, effectiveContentVersion, "", studyOwnerId);
     setAttempt(next);
     setAnswer("");
@@ -286,9 +305,11 @@ export function QuestionPractice({
     setRevision(value);
     if (!attempt) return;
     if (revisionTimer.current) clearTimeout(revisionTimer.current);
-    const draft = { qid: question.qid, attemptId: attempt.attemptId, contentVersion: attempt.contentVersion, kind: "revision" as const, text: value, savedAt: new Date().toISOString() };
+    const draft: Draft = { qid: question.qid, ...(studyOwnerId ? { ownerUserId: studyOwnerId } : {}), attemptId: attempt.attemptId, contentVersion: attempt.contentVersion, kind: "revision", text: value, savedAt: new Date().toISOString() };
     setSaveState("saving");
+    pendingRevisionRef.current = draft;
     revisionTimer.current = setTimeout(() => {
+      pendingRevisionRef.current = null;
       const epoch = studyEpoch.current;
       saveDraft(draft).then(() => {
         if (studyEpoch.current === epoch) setSaveState("saved");
@@ -302,6 +323,8 @@ export function QuestionPractice({
 
   async function saveRevision() {
     if (!attempt || !revision.trim() || !studyReady) return;
+    if (revisionTimer.current) clearTimeout(revisionTimer.current);
+    pendingRevisionRef.current = null;
     const epoch = studyEpoch.current;
     const now = new Date().toISOString();
     const next: Attempt = {
@@ -315,7 +338,7 @@ export function QuestionPractice({
     try {
       await saveAttempt(next);
       if (studyEpoch.current !== epoch) return;
-      await deleteDraft(question.qid);
+      await deleteDraft(question.qid, studyOwnerId || undefined);
       if (studyEpoch.current !== epoch) return;
       setSaveState("saved");
       setRevision("");
