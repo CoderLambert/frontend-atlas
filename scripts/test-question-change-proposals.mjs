@@ -104,12 +104,12 @@ try {
     },
   };
   const makePrivateHandlers = () => createQuestionPrivateOverrideHandlers(
-    new QuestionPrivateOverrideService(new QuestionPrivateOverrideRepository(opened.db), new Set(["Q1"]), "content-v1"),
+    new QuestionPrivateOverrideService(new QuestionPrivateOverrideRepository(opened.db), new Set(["Q1"]), "content-v1", new Map([["Q1", "hash-v1"]])),
     sessions,
     { trustedOriginUrl: "http://localhost" },
   );
   const makeProposalHandlers = () => createQuestionChangeProposalHandlers(
-    new QuestionChangeProposalService(new QuestionChangeProposalRepository(opened.db), new Set(["Q1"])),
+    new QuestionChangeProposalService(new QuestionChangeProposalRepository(opened.db), new Set(["Q1"]), "content-v1", new Map([["Q1", "hash-v1"]])),
     sessions,
     { trustedOriginUrl: "http://localhost" },
   );
@@ -164,6 +164,7 @@ try {
   const proposalA = (await response.json()).proposal;
   assert.equal(proposalA.title, "A 私人题干", "proposal snapshots server-owned private content rather than client fields");
   assert.equal(proposalA.baseContentVersion, "content-v1");
+  assert.equal(proposalA.baseContentSha256, "hash-v1");
   assert.equal(proposalA.sourceGenerationId, sourceA.generationId);
   assert.equal(proposalA.sourceOverrideVersion, 1);
   assert.equal(proposalA.status, "submitted");
@@ -313,6 +314,8 @@ try {
       expectedGenerationId: "old-generation",
       expectedVersion: 4,
       summary: "迁移后的再次重放",
+      publicContentVersion: "old-base",
+      publicContentSha256: "irrelevant-for-claimed-source",
     });
     assert.equal(migratedReplay.kind, "withdrawn-source");
     assert.equal(migratedReplay.value.id, "upgrade-original");
@@ -334,7 +337,7 @@ try {
       id: "upgrade-message", conversation_id: "upgrade-conversation", owner_user_id: "upgrade-user", client_message_id: "upgrade-client-message", role: "assistant", content: "迁移前回复", status: "complete",
     });
     assert.equal(upgraded.client.prepare("PRAGMA quick_check").pluck().get(), "ok");
-    assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 9);
+    assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 11);
   } finally {
     upgraded.client.close();
   }
@@ -398,7 +401,7 @@ try {
       { id: "published-proposal", summary: "已发布 0007 申请", status: "submitted" },
       "0008 preserves the existing proposal audit row",
     );
-    assert.equal(publishedDb.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 9);
+    assert.equal(publishedDb.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 11);
     assert.equal(publishedDb.client.prepare("PRAGMA quick_check").pluck().get(), "ok");
   } finally {
     publishedDb.client.close();

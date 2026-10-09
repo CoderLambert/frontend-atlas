@@ -15,6 +15,7 @@ const nextConfig: NextConfig = {
   ...(localAppMode ? { skipTrailingSlashRedirect: true } : {}),
   images: { unoptimized: true },
   poweredByHeader: false,
+  ...(localAppMode ? { experimental: { authInterrupts: true } } : {}),
 };
 
 export default nextConfig;

@@ -41,6 +41,14 @@ assert(map.company_questions.every((question) => question.master_ids.length > 0 
 assert(map.topics.every((topic) => topic.question_ids.every((id) => masterIds.has(id) || companyIds.has(id))), "topic question references must resolve");
 assert(map.master_questions.every((question) => Array.isArray(question.content) && question.content.length > 0), "every master question must retain full answer content");
 assert(map.company_questions.every((question) => Array.isArray(question.content) && question.content.length > 0), "every company variant must retain full content");
+const allQuestions = [...map.master_questions, ...map.company_questions];
+assert(allQuestions.every((question) => question.explanation_markdown === undefined
+  || (typeof question.explanation_markdown === "string" && Boolean(question.explanation_markdown.trim()))),
+"explicit question Markdown must be a non-empty string");
+assert(allQuestions.every((question) => question.checkpoints === undefined
+  || (Array.isArray(question.checkpoints) && question.checkpoints.length > 0
+    && question.checkpoints.every((checkpoint) => typeof checkpoint === "string" && Boolean(checkpoint.trim())))),
+"explicit question checkpoints must be non-empty strings");
 assert(chapters.chapters.every((chapter) => chapter.mechanisms.length > 0 && chapter.exercises.length === 2), "every chapter needs core content and two exercises");
 
 const d13 = map.master_questions.find((question) => question.qid === "D13");
@@ -60,6 +68,8 @@ const searchText = (question) => [
   question.subtopic,
   question.company,
   ...(question.tags ?? []),
+  question.explanation_markdown,
+  ...(question.checkpoints ?? []),
   ...(question.content ?? []).filter((block) => block.kind !== "code").map((block) => block.text),
 ].filter(Boolean).join(" ").toLocaleLowerCase("zh-CN");
 

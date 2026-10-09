@@ -30,6 +30,11 @@ const coachSessionsRouteHtml = await readFile(coachSessionsRoute, "utf8").catch(
 assert.match(coachSessionsRouteHtml, /404: This page could not be found\./u, "The server-saved account sessions route must remain a 404 in static export.");
 assert.doesNotMatch(coachSessionsRouteHtml, /连接知序站点账号|新建会话标题|发送一条用户消息|还没有账号会话/u, "The static site must not render the server-backed account UI.");
 
+const reviewerRoute = path.join(outputRoot, "moderation", "questions", "index.html");
+const reviewerRouteHtml = await readFile(reviewerRoute, "utf8").catch(() => "");
+assert.match(reviewerRouteHtml, /404: This page could not be found\./u, "The reviewer-only route must remain a 404 in static export.");
+assert.doesNotMatch(reviewerRouteHtml, /公共题库变更审核|待审核队列|批准这份提案/u, "The static site must not render the server-backed reviewer UI.");
+
 const aiGuideRoute = path.join(outputRoot, "ai-assist", "index.html");
 const aiGuideHtml = await readFile(aiGuideRoute, "utf8").catch(() => "");
 assert.match(aiGuideHtml, /AI 辅助练习/u, "The static site must expose the AI setup guide.");
@@ -60,4 +65,4 @@ for (const file of files) {
   }
 }
 assert.deepEqual(hits, [], `Local SIWC server/auth material leaked into static output:\n${hits.join("\n")}`);
-process.stdout.write(`Static publish boundary passed (${files.length} output files scanned; local coach route is 404; no SIWC credentials/protocol endpoints found).\n`);
+process.stdout.write(`Static publish boundary passed (${files.length} output files scanned; local coach and reviewer routes are 404; no SIWC credentials/protocol endpoints found).\n`);

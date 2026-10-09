@@ -61,7 +61,7 @@ try {
     },
   };
   const makeHandlers = () => createQuestionPrivateOverrideHandlers(
-    new QuestionPrivateOverrideService(new QuestionPrivateOverrideRepository(opened.db), new Set(["Q1"]), "content-v1"),
+    new QuestionPrivateOverrideService(new QuestionPrivateOverrideRepository(opened.db), new Set(["Q1"]), "content-v1", new Map([["Q1", "hash-v1"]])),
     sessions,
     { trustedOriginUrl: "http://localhost" },
   );
@@ -86,6 +86,7 @@ try {
   assert.ok(first.generationId, "server assigns the private record generation");
   assert.equal(first.title, "我的题干");
   assert.equal(first.baseContentVersion, "content-v1", "the server records the trusted public content version, not a client claim");
+  assert.equal(first.baseContentSha256, "hash-v1", "the server records the trusted public content hash");
   assert.equal(new QuestionPrivateOverrideRepository(opened.db).find("user-b", "Q1"), null, "owner comes only from the verified session");
 
   response = await handlers.read(request("user-b", "GET", "Q1"), context("Q1"));

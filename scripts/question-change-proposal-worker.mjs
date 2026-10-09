@@ -17,7 +17,12 @@ const sessions = {
   },
 };
 const handlers = createQuestionChangeProposalHandlers(
-  new QuestionChangeProposalService(new QuestionChangeProposalRepository(opened.db), new Set([qid])),
+  new QuestionChangeProposalService(
+    new QuestionChangeProposalRepository(opened.db),
+    new Set([qid]),
+    input.baseContentVersion,
+    new Map([[qid, input.baseContentSha256]]),
+  ),
   sessions,
   { trustedOriginUrl: "http://localhost" },
 );

@@ -1,9 +1,10 @@
-import type { ContentBlock } from "@/lib/content";
+import { explanationMarkdownFor, type ContentBlock, type MasterQuestion, type CompanyQuestion } from "@/lib/content";
 
 export type QuestionPrivateOverride = {
   qid: string;
   generationId: string;
   baseContentVersion: string;
+  baseContentSha256: string;
   title: string;
   explanationMarkdown: string;
   checkpoints: string[];
@@ -19,4 +20,8 @@ export function contentBlocksToMarkdown(blocks: ContentBlock[]) {
     const links = block.links?.map((link) => `[${link.label}](${link.target})`).join(" · ");
     return links ? `${block.text}\n\n${links}` : block.text;
   }).join("\n\n");
+}
+
+export function publicQuestionExplanationMarkdown(question: MasterQuestion | CompanyQuestion) {
+  return explanationMarkdownFor(question);
 }
