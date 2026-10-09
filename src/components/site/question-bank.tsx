@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getStudySnapshot, type Attempt } from "@/lib/study-store";
+import { getVisibleStudySnapshot, subscribeToStudyAccountChanges, type Attempt } from "@/lib/study-store";
 import type { QuestionIndexItem, TopicIndexItem } from "@/lib/content";
 
 type Tab = "master" | "company";
@@ -47,16 +47,23 @@ export function QuestionBank({ questions, topics }: { questions: QuestionIndexIt
   const [attemptsByQid, setAttemptsByQid] = useState<Map<string, Attempt>>(new Map());
   const [progressState, setProgressState] = useState<"loading" | "ready" | "error">("loading");
   const restoreRef = useRef(false);
+  const [accountEpoch, setAccountEpoch] = useState(0);
+
+  useEffect(() => subscribeToStudyAccountChanges(() => {
+    setAttemptsByQid(new Map());
+    setProgressState("loading");
+    setAccountEpoch((epoch) => epoch + 1);
+  }), []);
 
   useEffect(() => {
     let active = true;
-    getStudySnapshot().then((snapshot) => {
+    getVisibleStudySnapshot().then((snapshot) => {
       if (!active) return;
       setAttemptsByQid(latestAttemptsByQuestion(snapshot.attempts));
       setProgressState("ready");
     }).catch(() => { if (active) setProgressState("error"); });
     return () => { active = false; };
-  }, []);
+  }, [accountEpoch]);
 
   // Static export cannot read query strings on the server; restore these URL/session filters once after hydration.
   /* eslint-disable react-hooks/set-state-in-effect */
