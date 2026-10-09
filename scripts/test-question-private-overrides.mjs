@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -136,6 +136,49 @@ try {
   assert.equal(response.status, 409);
   response = await handlers.read(request("user-a", "GET", "Q1"), context("Q1"));
   assert.equal((await response.json()).override.title, "重建的私人版本");
+
+
+  // Exercise the real 0004 -> 0005 upgrade on a disposable SQLite database.
+  const oldPath = join(tempRoot, "pre-generation.sqlite");
+  const oldMigrations = join(tempRoot, "old-migrations");
+  const migrations = join(projectRoot, "src/lib/db/migrations");
+  mkdirSync(join(oldMigrations, "meta"), { recursive: true });
+  const oldJournal = JSON.parse(readFileSync(join(migrations, "meta/_journal.json"), "utf8"));
+  oldJournal.entries = oldJournal.entries.filter((entry) => entry.idx <= 4);
+  writeFileSync(join(oldMigrations, "meta/_journal.json"), JSON.stringify(oldJournal));
+  for (const entry of oldJournal.entries) {
+    copyFileSync(join(migrations, entry.tag + ".sql"), join(oldMigrations, entry.tag + ".sql"));
+  }
+  const oldDb = openSqliteDatabase(oldPath);
+  const oldTimestamp = Date.now();
+  try {
+    migrate(oldDb.db, { migrationsFolder: oldMigrations });
+    oldDb.client.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)")
+      .run("legacy-user", "Legacy", "legacy@example.test", oldTimestamp, oldTimestamp);
+    oldDb.client.prepare("INSERT INTO question_private_overrides (owner_user_id, qid, base_content_version, title, explanation_markdown, checkpoints_json, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("legacy-user", "Q1", "old-base", "旧题干", "# 原有内容", '["A"]', 7, oldTimestamp, oldTimestamp);
+    oldDb.client.prepare("INSERT INTO coach_conversations (id, owner_user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("legacy-conv", "legacy-user", "旧聊天", oldTimestamp, oldTimestamp);
+    oldDb.client.prepare("INSERT INTO coach_provider_bindings (owner_user_id, siwc_client_id, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+      .run("legacy-user", "legacy-binding", 3, oldTimestamp, oldTimestamp);
+  } finally {
+    oldDb.client.close();
+  }
+  const upgraded = openSqliteDatabase(oldPath);
+  try {
+    migrate(upgraded.db, { migrationsFolder: migrations });
+    migrate(upgraded.db, { migrationsFolder: migrations });
+    const stored = upgraded.client.prepare("SELECT title, version, base_content_version, generation_id FROM question_private_overrides WHERE owner_user_id = ?").get("legacy-user");
+    assert.equal(stored.title, "旧题干");
+    assert.equal(stored.version, 7);
+    assert.equal(stored.base_content_version, "old-base");
+    assert.match(stored.generation_id, /^[0-9a-f]{32}$/u, "0005 fills an existing row with a unique generation");
+    for (const [table, expected] of [["user", 1], ["coach_conversations", 1], ["coach_provider_bindings", 1]]) {
+      assert.equal(upgraded.client.prepare(`SELECT count(*) AS n FROM ${table}`).get().n, expected, `${table} records survive 0005`);
+    }
+  } finally {
+    upgraded.client.close();
+  }
 
   process.stdout.write("Question private override tests passed.\n");
 } finally {
