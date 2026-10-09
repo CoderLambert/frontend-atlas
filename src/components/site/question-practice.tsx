@@ -123,7 +123,7 @@ export function QuestionPractice({
     ? privateOverride.checkpoints.map((text, index) => ({ id: `${question.qid}-private-${index + 1}`, label: text, text }))
     : publicCheckpoints;
   const effectiveContentVersion = privateSelection && privateOverride
-    ? `${contentVersion}:private:${encodeURIComponent(privateSelection.ownerUserId)}:${privateOverride.version}`
+    ? `${contentVersion}:private:${encodeURIComponent(privateSelection.ownerUserId)}:${privateOverride.generationId}:${privateOverride.version}`
     : contentVersion;
   const effectiveTitle = privateOverride?.title ?? question.title;
   const isMaster = "topic_id" in question;
