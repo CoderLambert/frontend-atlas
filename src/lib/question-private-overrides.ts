@@ -2,6 +2,7 @@ import type { ContentBlock } from "@/lib/content";
 
 export type QuestionPrivateOverride = {
   qid: string;
+  generationId: string;
   baseContentVersion: string;
   title: string;
   explanationMarkdown: string;
