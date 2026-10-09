@@ -5,7 +5,7 @@ if (process.env.FRONTEND_ATLAS_LOCAL_MODE !== "1") {
   process.exit(1);
 }
 
-const server = createLocalHttpServer();
+const server = createLocalHttpServer({ serviceToken: process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN });
 server.on("error", (error) => {
   if (error?.code === "EADDRINUSE") {
     process.stderr.write("Local SIWC port 4317 is already in use; no alternate port was selected.\n");

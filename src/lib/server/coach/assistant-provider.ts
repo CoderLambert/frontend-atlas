@@ -1,6 +1,14 @@
+export type AssistantProviderMessage = { role: "user" | "assistant"; content: string };
 export type AssistantProvider = {
-  name: "local-mock";
-  stream(input: { content: string; signal: AbortSignal }): AsyncIterable<string>;
+  name: "local-mock" | "siwc-chatgpt";
+  model: string | null;
+  bindingVersion: number | null;
+  stream(input: {
+    content: string;
+    messages: AssistantProviderMessage[];
+    model: string | null;
+    signal: AbortSignal;
+  }): AsyncIterable<string>;
 };
 
 function isLocalRequest(request: Request) {
@@ -41,6 +49,8 @@ function waitForChunk(signal: AbortSignal) {
 export function createLocalMockAssistantProvider(): AssistantProvider {
   return {
     name: "local-mock",
+    model: null,
+    bindingVersion: null,
     async *stream({ signal }) {
       const response = [
         "**本机 Mock 流式演示**\n\n",

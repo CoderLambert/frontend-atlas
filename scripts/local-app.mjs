@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,11 +16,15 @@ if (!allowedModes.has(mode)) {
 const env = {
   ...process.env,
   FRONTEND_ATLAS_LOCAL_MODE: "1",
+  FRONTEND_ATLAS_SIWC_SERVICE_TOKEN: process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN ?? randomBytes(32).toString("base64url"),
   NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE: "1",
   NEXT_TELEMETRY_DISABLED: "1",
 };
-if (mode === "dev") env.FRONTEND_ATLAS_MOCK_ASSISTANT = "1";
-else delete env.FRONTEND_ATLAS_MOCK_ASSISTANT;
+if (mode === "dev" && process.env.FRONTEND_ATLAS_MOCK_ASSISTANT === "1") {
+  env.FRONTEND_ATLAS_MOCK_ASSISTANT = "1";
+} else {
+  delete env.FRONTEND_ATLAS_MOCK_ASSISTANT;
+}
 const node = process.execPath;
 const nextBin = path.join(root, "node_modules", "next", "dist", "bin", "next");
 const localServer = path.join(root, "server", "index.mjs");

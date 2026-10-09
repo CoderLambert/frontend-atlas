@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import Link from "next/link";
 import { AlertCircle, ArrowUpRight, CheckCircle2, Clock3, Copy, DatabaseBackup, LoaderCircle, LogIn, LogOut, MessageSquareText, Plus, RefreshCw, Send, Square, UserRound } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { copyCodeText } from "@/lib/copy-code.mjs";
@@ -68,6 +68,15 @@ type PendingDeparture = { action: DepartureAction; recoveries: UnsavedAssistantR
 type LegacyPreviewRecord = Omit<CoachConversation, "status"> & { status: string };
 type LegacyImportResult = { index: number; status: "imported" | "already_imported" | "conflict" | "invalid" | "failed" };
 type LegacyImportPreview = { accountId: string; records: LegacyPreviewRecord[] };
+type ProviderModel = { slug: string; displayName: string };
+type ProviderConnection = {
+  authorization: "operator_required" | "authorized";
+  connected: boolean;
+  reason?: "session_required" | "profile_mismatch" | "plan_permission_required";
+  account?: { name: string | null; email: string | null };
+  selectedModel: string | null;
+  bindingVersion: number | null;
+};
 
 const unsavedRecoveryPrefix = "frontend-atlas:coach-unsaved-assistant:v1:";
 const conversationMessageStatuses = new Set<ConversationMessage["status"]>(["pending", "streaming", "complete", "interrupted", "failed", "cancelled"]);
@@ -284,6 +293,12 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
   const [legacyImportBusy, setLegacyImportBusy] = useState(false);
   const [legacyImportError, setLegacyImportError] = useState("");
   const [legacyImportConfirmOpen, setLegacyImportConfirmOpen] = useState(false);
+  const [providerConnection, setProviderConnection] = useState<ProviderConnection | null>(null);
+  const [providerModels, setProviderModels] = useState<ProviderModel[]>([]);
+  const [providerLoading, setProviderLoading] = useState(false);
+  const [providerBusy, setProviderBusy] = useState(false);
+  const [providerError, setProviderError] = useState("");
+  const [providerUnbindConfirmOpen, setProviderUnbindConfirmOpen] = useState(false);
   const epochRef = useRef(0);
   const conversationEpochRef = useRef(0);
   const conversationListEpochRef = useRef(0);
@@ -461,6 +476,12 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
     setLegacyImportBusy(false);
     setLegacyImportError("");
     setLegacyImportConfirmOpen(false);
+    setProviderConnection(null);
+    setProviderModels([]);
+    setProviderLoading(false);
+    setProviderBusy(false);
+    setProviderError("");
+    setProviderUnbindConfirmOpen(false);
     updateConversationQuery(null);
     return epochRef.current;
   }, [activateConversation, updateConversationQuery]);
@@ -604,6 +625,39 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
     }
   }, [activateConversation, loadConversation, registerRequest, releaseRequest, reportError, updateConversationQuery]);
 
+  const loadProviderConnection = useCallback(async (epoch: number, accountId: string) => {
+    const controller = registerRequest();
+    setProviderLoading(true);
+    setProviderError("");
+    try {
+      const connection = await requestJson<ProviderConnection>("/api/coach/provider-connection", {
+        signal: controller.signal,
+        accountId,
+      });
+      if (epoch !== epochRef.current || accountRef.current?.id !== accountId || controller.signal.aborted) return;
+      setProviderConnection(connection);
+      if (!connection.connected) {
+        setProviderModels([]);
+        return;
+      }
+      const response = await requestJson<{ models: ProviderModel[]; selectedModel: string | null }>(
+        "/api/coach/provider-connection",
+        { method: "POST", body: {}, signal: controller.signal, accountId },
+      );
+      if (epoch !== epochRef.current || accountRef.current?.id !== accountId || controller.signal.aborted) return;
+      setProviderModels(response.models);
+      setProviderConnection((current) => current ? { ...current, selectedModel: response.selectedModel } : current);
+    } catch (cause) {
+      if (epoch !== epochRef.current || controller.signal.aborted) return;
+      if (cause instanceof AccountApiError && cause.status === 401) expireAccount();
+      else if (cause instanceof AccountApiError && cause.status === 409 && cause.code === "account_changed") refreshAfterAccountMismatch();
+      else setProviderError(cause instanceof Error ? cause.message : "无法读取 ChatGPT 连接状态。");
+    } finally {
+      releaseRequest(controller);
+      if (epoch === epochRef.current && accountRef.current?.id === accountId) setProviderLoading(false);
+    }
+  }, [expireAccount, refreshAfterAccountMismatch, registerRequest, releaseRequest]);
+
   const loadSession = useCallback(async (options: LoadSessionOptions = {}) => {
     const requestEpoch = ++sessionRequestEpochRef.current;
     const epoch = epochRef.current;
@@ -623,7 +677,12 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
       setSessionLoading(false);
       setError("");
       if (options.broadcastChange !== false && previousAccountId !== (nextStatus.account?.id ?? null)) notifyAccountChange();
-      if (nextStatus.account) await loadConversations(activeEpoch, nextStatus.account.id);
+      if (nextStatus.account) {
+        await Promise.all([
+          loadConversations(activeEpoch, nextStatus.account.id),
+          loadProviderConnection(activeEpoch, nextStatus.account.id),
+        ]);
+      }
       else {
         setConversations([]);
         activateConversation(null);
@@ -636,7 +695,7 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
       releaseRequest(controller);
       if (epoch === epochRef.current) setSessionLoading(false);
     }
-  }, [activateConversation, clearAccountData, loadConversations, notifyAccountChange, registerRequest, releaseRequest, reportError, updateConversationQuery]);
+  }, [activateConversation, clearAccountData, loadConversations, loadProviderConnection, notifyAccountChange, registerRequest, releaseRequest, reportError, updateConversationQuery]);
 
   useEffect(() => {
     loadSessionRef.current = loadSession;
@@ -974,11 +1033,101 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
       : "自动复制不可用；请选中当前回复手动备份，SQLite 尚未确认保存这段完整内容。");
   }
 
+  async function updateProviderModel(model: string) {
+    if (!account || providerBusy || messageBusy || !providerConnection?.connected) return;
+    const epoch = epochRef.current;
+    const accountId = account.id;
+    setProviderBusy(true);
+    setProviderError("");
+    const controller = registerRequest();
+    try {
+      const updated = await requestJson<{ selectedModel: string; bindingVersion: number }>(
+        "/api/coach/provider-connection",
+        { method: "PATCH", body: { model }, signal: controller.signal, accountId },
+      );
+      if (epoch !== epochRef.current || accountRef.current?.id !== accountId || controller.signal.aborted) return;
+      setProviderConnection((current) => current ? {
+        ...current,
+        selectedModel: updated.selectedModel,
+        bindingVersion: updated.bindingVersion,
+      } : current);
+      setNotice("模型选择已保存；后续新运行会在服务端重新核验连接、模型与绑定版本。");
+    } catch (cause) {
+      if (epoch !== epochRef.current || controller.signal.aborted) return;
+      if (cause instanceof AccountApiError && cause.status === 401) expireAccount();
+      else if (cause instanceof AccountApiError && cause.status === 409 && cause.code === "account_changed") refreshAfterAccountMismatch();
+      else setProviderError(cause instanceof Error ? cause.message : "模型选择没有保存。");
+    } finally {
+      releaseRequest(controller);
+      if (epoch === epochRef.current && accountRef.current?.id === accountId) setProviderBusy(false);
+    }
+  }
+
+  async function resumeProviderConnection() {
+    if (!account || providerBusy || messageBusy || providerConnection?.authorization !== "authorized") return;
+    const epoch = epochRef.current;
+    const accountId = account.id;
+    setProviderBusy(true);
+    setProviderError("");
+    const controller = registerRequest();
+    try {
+      await requestJson<{ resumed: boolean }>("/api/coach/provider-connection/resume", {
+        method: "POST",
+        body: {},
+        signal: controller.signal,
+        accountId,
+      });
+      if (epoch !== epochRef.current || accountRef.current?.id !== accountId || controller.signal.aborted) return;
+      setNotice("已恢复此站点账号获授权的本机 ChatGPT 连接；正在重新核验模型权限。");
+      await loadProviderConnection(epoch, accountId);
+    } catch (cause) {
+      if (epoch !== epochRef.current || controller.signal.aborted) return;
+      if (cause instanceof AccountApiError && cause.status === 401) expireAccount();
+      else if (cause instanceof AccountApiError && cause.status === 409 && cause.code === "account_changed") refreshAfterAccountMismatch();
+      else setProviderError(cause instanceof Error ? cause.message : "已授权的 ChatGPT 连接无法恢复。");
+    } finally {
+      releaseRequest(controller);
+      if (epoch === epochRef.current && accountRef.current?.id === accountId) setProviderBusy(false);
+    }
+  }
+
+  async function unbindProvider() {
+    if (!account || providerBusy || messageBusy || providerConnection?.authorization !== "authorized") return;
+    const epoch = epochRef.current;
+    const accountId = account.id;
+    setProviderBusy(true);
+    setProviderError("");
+    const controller = registerRequest();
+    try {
+      await requestJson<{ unbound: boolean; historyPreserved: boolean }>("/api/coach/provider-connection", {
+        method: "DELETE",
+        body: {},
+        signal: controller.signal,
+        accountId,
+      });
+      if (epoch !== epochRef.current || accountRef.current?.id !== accountId || controller.signal.aborted) return;
+      setProviderConnection({ authorization: "operator_required", connected: false, selectedModel: null, bindingVersion: null });
+      setProviderModels([]);
+      setProviderUnbindConfirmOpen(false);
+      setNotice("已解除模型连接授权；SQLite 历史会话与消息均已保留，本机 ChatGPT 凭据未删除。");
+    } catch (cause) {
+      if (epoch !== epochRef.current || controller.signal.aborted) return;
+      if (cause instanceof AccountApiError && cause.status === 401) expireAccount();
+      else if (cause instanceof AccountApiError && cause.status === 409 && cause.code === "account_changed") refreshAfterAccountMismatch();
+      else setProviderError(cause instanceof Error ? cause.message : "解除连接没有完成。");
+    } finally {
+      releaseRequest(controller);
+      if (epoch === epochRef.current && accountRef.current?.id === accountId) setProviderBusy(false);
+    }
+  }
+
   async function sendMessage(event?: React.FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const conversationId = activeConversationIdRef.current;
     if (!account || !status || !conversationId || conversation?.id !== conversationId || messageBusyRef.current || !messageDraft.trim()) return;
     const usesMockAssistant = status.assistantProvider === "local-mock";
+    const usesRealAssistant = providerConnection?.connected === true && Boolean(providerConnection.selectedModel);
+    const usesAssistant = usesMockAssistant || usesRealAssistant;
     const epoch = epochRef.current;
     const conversationEpoch = conversationEpochRef.current;
     const isCurrentSubmission = () => epoch === epochRef.current
@@ -1000,7 +1149,7 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
     messageRequestRef.current?.abort();
     messageRequestRef.current = controller;
     try {
-      if (!usesMockAssistant) {
+      if (!usesAssistant) {
         const saved = await requestJson<{ message: ConversationMessage; duplicate: boolean }>(
           `/api/coach/conversations/${encodeURIComponent(conversationId)}/messages`,
           { method: "POST", body: { clientMessageId: submission.id, content: submission.content }, signal: controller.signal, accountId: account.id },
@@ -1089,7 +1238,9 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
           setConversations((current) => current.map((item) => item.id === conversationId ? { ...item, updatedAt: userMessage.createdAt } : item)
             .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)));
           setMessageError("");
-          setNotice("消息已原子保存，正在接收本机 Mock 流式演示回复。");
+          setNotice(usesMockAssistant
+            ? "消息已原子保存，正在接收本机 Mock 流式演示回复。"
+            : "消息已原子保存，正在接收真实 ChatGPT 流式回复。");
         } else if (event.type === "delta" && typeof event.text === "string" && typeof event.runId === "string") {
           const activeRun = activeRunRef.current;
           if (!activeRun || activeRun.runId !== event.runId || activeRun.conversationId !== conversationId) return;
@@ -1182,7 +1333,9 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
             setPendingRetry(false);
             setRetryMode("same");
           setMessageError("");
-            setNotice("本机 Mock 演示已完成，用户消息和助手回复均已保存。");
+            setNotice(usesMockAssistant
+              ? "本机 Mock 演示已完成，用户消息和助手回复均已保存。"
+              : "真实 ChatGPT 回复已完成并保存到当前站点账号的 SQLite 会话。");
           } else {
             pendingSubmissionRef.current = null;
             setPendingRetry(true);
@@ -1299,6 +1452,13 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
   }
 
   const providerLabels: Record<SocialProvider, string> = { github: "GitHub", google: "Google" };
+  const realAssistantReady = providerConnection?.connected === true && Boolean(providerConnection.selectedModel);
+  const assistantReady = status?.assistantProvider === "local-mock" || realAssistantReady;
+  const providerBadge = status?.assistantProvider === "local-mock"
+    ? "本机 Mock 体验"
+    : realAssistantReady ? "真实 ChatGPT 已连接"
+      : providerLoading ? "正在检查 AI 连接"
+        : providerConnection?.authorization === "operator_required" ? "待操作员授权" : "AI 未连接";
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? null;
   const currentLegacyPreview = account?.authMethod === "oauth" && legacyPreview?.accountId === account.id ? legacyPreview : null;
   const legacyPreviewRecords = currentLegacyPreview?.records ?? [];
@@ -1321,23 +1481,53 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
             <h1 id="account-page-title">账号会话</h1>
             <p>连接知序站点账号，跨刷新查看你的消息与助手运行记录。</p>
           </div>
-          <Badge variant="outline">{status?.assistantProvider === "local-mock" ? "本机 Mock 体验" : status?.assistantProvider === "unavailable" ? "AI 未连接" : "正在检查 AI 连接"}</Badge>
+          <Badge variant="outline">{providerBadge}</Badge>
         </div>
       </section>
 
       <Card className="coach-account-model-notice">
         <CardContent>
           <div><strong>站点账号与模型连接是两件事</strong><p>{status?.assistantProvider === "local-mock"
-            ? "仅 local:dev 本机启用 Mock 流式演示；它不会连接真实模型，也不会复用本机 SIWC 凭据。"
-            : "AI 未连接。此页面不会伪造助手回复；你仍可保存纯文本消息，但不会收到助手回复。"}</p></div>
+            ? "仅显式启用的本机 Mock 流式演示；它不会连接真实模型，也不会复用本机 SIWC 凭据。"
+            : !account ? "先登录站点账号；模型连接会按服务端验证后的 userId 单独授权。"
+              : providerLoading ? "正在核验此站点账号的受控连接、当前浏览器 SIWC 会话与模型权限。"
+                : providerConnection?.authorization === "operator_required" ? "此账号尚未获本机操作员分配连接。本页不会展示本机 profile 列表，也不能提交 profileId 自助认领。"
+                  : providerConnection?.reason === "session_required" ? "此账号已有授权映射，但当前浏览器的 ChatGPT 会话需要恢复。这里只会恢复操作员已分配的连接，不会展示或接受 profileId。"
+                    : providerConnection?.reason === "profile_mismatch" ? "当前浏览器连接的 ChatGPT profile 与此站点账号的授权映射不一致，模型调用已拒绝；可以安全切回已获授权的连接。"
+                      : providerConnection?.reason === "plan_permission_required" ? "已连接的 ChatGPT 账号当前没有计划用量权限，模型调用已关闭。"
+                        : realAssistantReady ? "真实回复通过服务端受控 SIWC 连接生成，并沿用现有 run 管理器流式写入当前用户的 SQLite 会话。"
+                          : providerConnection?.connected ? "连接已核验；请选择一个当前账号可用的模型后再发送。"
+                            : "AI 未连接。此页面不会伪造助手回复；你仍可保存纯文本消息，但不会收到助手回复。"}</p></div>
           <div className="coach-account-model-actions">
-            <Badge variant="outline">{status?.assistantProvider === "local-mock" ? "明确标记的 Mock 回复" : "未连接"}</Badge>
-            <Button asChild variant="outline" size="sm">
-              <Link href="/coach/" prefetch={false} data-testid="chatgpt-coach-entry">
-                <ArrowUpRight size={14} aria-hidden="true" />前往 ChatGPT 连接入口
-              </Link>
-            </Button>
+            <Badge variant="outline">{status?.assistantProvider === "local-mock" ? "明确标记的 Mock 回复" : realAssistantReady ? "真实回复" : "未连接"}</Badge>
+            {account && providerConnection?.connected && providerModels.length > 0 && status?.assistantProvider !== "local-mock" && (
+              <Select value={providerConnection.selectedModel ?? ""} onValueChange={(value) => void updateProviderModel(value)} disabled={providerBusy || messageBusy}>
+                <SelectTrigger aria-label="选择 ChatGPT 模型" data-testid="provider-model-select"><SelectValue placeholder="选择模型" /></SelectTrigger>
+                <SelectContent>
+                  {providerModels.map((model) => <SelectItem key={model.slug} value={model.slug}>{model.displayName}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
+            {account && providerConnection?.authorization === "authorized"
+              && (providerConnection.reason === "session_required" || providerConnection.reason === "profile_mismatch")
+              && status?.assistantProvider !== "local-mock" && (
+              <Button type="button" variant="outline" size="sm" onClick={() => void resumeProviderConnection()} disabled={providerBusy || messageBusy} data-testid="provider-resume">
+                {providerBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
+                恢复已授权连接
+              </Button>
+            )}
+            {account && providerConnection?.authorization === "authorized" && status?.assistantProvider !== "local-mock" && (
+              <Button type="button" variant="outline" size="sm" onClick={() => setProviderUnbindConfirmOpen(true)} disabled={providerBusy || messageBusy} data-testid="provider-unbind-open">
+                解除连接
+              </Button>
+            )}
+            {account && !providerLoading && status?.assistantProvider !== "local-mock" && (
+              <Button type="button" variant="ghost" size="sm" onClick={() => void loadProviderConnection(epochRef.current, account.id)} disabled={providerBusy || messageBusy} data-testid="provider-refresh">
+                <RefreshCw size={14} aria-hidden="true" />刷新连接
+              </Button>
+            )}
           </div>
+          {providerError && <p className="coach-account-inline-error" role="alert"><AlertCircle size={15} aria-hidden="true" />{providerError}</p>}
         </CardContent>
       </Card>
 
@@ -1464,10 +1654,10 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
                           <time dateTime={message.createdAt}>{formatDate(message.createdAt)}</time>
                         </li>
                       ))}
-                      {conversation.messages.length === 0 && <li className="coach-account-empty-message">向本机 Mock 助手发送一条消息后，会在这里显示并保存双方内容。</li>}
+                      {conversation.messages.length === 0 && <li className="coach-account-empty-message">{assistantReady ? "发送消息后，用户输入与助手回复会在这里显示并保存。" : "AI 未连接时仍可保存用户文本；连接后，助手回复也会写入同一会话。"}</li>}
                     </ol>
                     <form className="coach-account-composer" onSubmit={(event) => void sendMessage(event)}>
-                      <Label htmlFor="account-message">{status?.assistantProvider === "local-mock" ? "发送给本机 Mock 助手" : "保存纯文本消息（AI 未连接）"}</Label>
+                      <Label htmlFor="account-message">{status?.assistantProvider === "local-mock" ? "发送给本机 Mock 助手" : realAssistantReady ? "发送给已授权的真实 ChatGPT 连接" : "保存纯文本消息（AI 未连接）"}</Label>
                       <Textarea id="account-message" value={messageDraft} maxLength={500_000} onChange={(event) => {
                         const nextValue = event.target.value;
                         setMessageDraft(nextValue);
@@ -1475,8 +1665,8 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
                           pendingSubmissionRef.current = null;
                           setPendingRetry(false);
                         }
-                      }} placeholder={status?.assistantProvider === "local-mock" ? "输入内容，观察本机 Mock 流式演示……" : "AI 未连接；保存后不会生成助手回复。"} disabled={messageBusy || busyAction !== null || sessionLoading || !status} data-testid="message-draft" />
-                      <div className="coach-account-composer-footer"><span>{messageDraft.length.toLocaleString("zh-CN")} / 500,000</span><div className="coach-account-composer-actions">{messageBusy && activeRunId && <Button type="button" variant="outline" onClick={() => void cancelAssistantRun()} data-testid="cancel-assistant-run"><Square size={14} aria-hidden="true" />停止</Button>}<Button type="submit" disabled={messageBusy || busyAction !== null || sessionLoading || !status || !messageDraft.trim()} data-testid="send-message">{messageBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}{messageBusy ? "生成中" : status?.assistantProvider === "local-mock" ? "发送" : "保存消息"}</Button></div></div>
+                      }} placeholder={status?.assistantProvider === "local-mock" ? "输入内容，观察本机 Mock 流式演示……" : realAssistantReady ? "输入内容；真实回复会流式保存到当前账号的 SQLite 会话……" : "AI 未连接；保存后不会生成助手回复。"} disabled={messageBusy || busyAction !== null || sessionLoading || !status} data-testid="message-draft" />
+                      <div className="coach-account-composer-footer"><span>{messageDraft.length.toLocaleString("zh-CN")} / 500,000</span><div className="coach-account-composer-actions">{messageBusy && activeRunId && <Button type="button" variant="outline" onClick={() => void cancelAssistantRun()} data-testid="cancel-assistant-run"><Square size={14} aria-hidden="true" />停止</Button>}<Button type="submit" disabled={messageBusy || busyAction !== null || sessionLoading || !status || !messageDraft.trim()} data-testid="send-message">{messageBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Send size={15} aria-hidden="true" />}{messageBusy ? "生成中" : assistantReady ? "发送" : "保存消息"}</Button></div></div>
                       {messageError && <p className="coach-account-inline-error" role="alert"><AlertCircle size={15} aria-hidden="true" />{messageError}</p>}
                       {pendingRetry && !messageBusy && <Button type="button" variant="outline" size="sm" onClick={() => void sendMessage()} data-testid="retry-message">{retryMode === "same" ? "重试同一运行键" : "重新发起新运行"}</Button>}
                     </form>
@@ -1516,6 +1706,27 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
           浏览器无法写入此标签页的恢复缓冲；请复制尚未保存的助手回复，或在离开前明确备份。
         </p>
       )}
+      <AlertDialog
+        open={providerUnbindConfirmOpen}
+        onOpenChange={(open) => {
+          if (!providerBusy) setProviderUnbindConfirmOpen(open);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>解除这个站点账号的 ChatGPT 连接？</AlertDialogTitle>
+            <AlertDialogDescription>
+              解除后不会删除 SQLite 历史会话，也不会删除本机 SIWC 凭据。进行中的对应运行会取消；以后需要由本机操作员重新明确分配。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <Button type="button" variant="ghost" onClick={() => setProviderUnbindConfirmOpen(false)} disabled={providerBusy}>保留连接</Button>
+            <Button type="button" variant="destructive" onClick={() => void unbindProvider()} disabled={providerBusy || messageBusy} data-testid="provider-unbind-confirm">
+              {providerBusy ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : null}确认解除
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog
         open={pendingDeparture !== null}
         onOpenChange={(open) => {
