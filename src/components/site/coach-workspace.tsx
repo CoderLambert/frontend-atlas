@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { getStudySnapshot, saveAttempt, saveCoachConversation, saveDraft, type Attempt, type CoachConversation, type CoachConversationStatus, type CoachMode } from "@/lib/study-store";
+import { getCurrentStudyOwner, getVisibleStudySnapshot, saveAttempt, saveCoachConversation, saveDraft, subscribeToStudyAccountChanges, type Attempt, type CoachConversation, type CoachConversationStatus, type CoachMode } from "@/lib/study-store";
 import { afterPreparation, createRequestLifecycle, discardRequestBuffer, flushRequestBuffer, takeRequestBuffer } from "@/lib/request-epoch.mjs";
 
 const API_ORIGIN = "http://127.0.0.1:4317";
@@ -80,11 +80,12 @@ async function requestJson(path: string, init: RequestInit = {}) {
   return data;
 }
 
-function makeAttempt(qid: string, contentVersion: string): Attempt {
+function makeAttempt(qid: string, contentVersion: string, ownerUserId?: string): Attempt {
   const now = new Date().toISOString();
   return {
     attemptId: crypto.randomUUID(),
     qid,
+    ...(ownerUserId ? { ownerUserId } : {}),
     contentVersion,
     startedAt: now,
     originalAnswer: "",
@@ -197,6 +198,14 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     }
   }
 
+  useEffect(() => subscribeToStudyAccountChanges(() => {
+    // This legacy coach keeps device-local state. A full reload prevents old in-memory
+    // responses, streams or debounced writes from crossing a Better Auth account change.
+    pendingDraftRef.current = null;
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    window.location.reload();
+  }), []);
+
   useEffect(() => {
     currentQidRef.current = selectedId;
     let active = true;
@@ -209,7 +218,7 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     conversationRef.current = null;
     activeConversationIdRef.current = null;
     lastRequestRef.current = null;
-    Promise.resolve().then(getStudySnapshot).then((snapshot) => {
+    Promise.resolve().then(getVisibleStudySnapshot).then((snapshot) => {
       if (!active) return;
       const latest = snapshot.attempts
         .filter((item) => item.qid === selectedId)
@@ -289,14 +298,19 @@ export function CoachWorkspace({ questions, contentVersion, initialQuestionId }:
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = null;
     try {
+      const ownerUserId = await getCurrentStudyOwner();
       let attempt = attemptRef.current;
+      if (attempt?.ownerUserId && attempt.ownerUserId !== ownerUserId) {
+        throw new Error("账号已切换，已停止保存旧草稿。");
+      }
       if (!attempt || attempt.qid !== pending.qid || attempt.contentVersion !== contentVersion) {
-        attempt = makeAttempt(pending.qid, contentVersion);
+        attempt = makeAttempt(pending.qid, contentVersion, ownerUserId ?? undefined);
       }
       const updatedAt = new Date().toISOString();
       if (attempt.revealedAt) {
         await saveDraft({
           qid: attempt.qid,
+          ...(ownerUserId ? { ownerUserId } : {}),
           attemptId: attempt.attemptId,
           contentVersion: attempt.contentVersion,
           kind: "revision",
