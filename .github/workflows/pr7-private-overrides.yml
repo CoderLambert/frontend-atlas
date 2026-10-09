@@ -1,0 +1,53 @@
+name: Private question override regression
+
+on:
+  push:
+    branches:
+      - codex/better-auth-local-setup
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: TypeScript
+        run: npm run typecheck
+      - name: ESLint
+        run: npm run lint
+      - name: Question override API and migration
+        run: npm run test:question-overrides
+      - name: IndexedDB compatibility
+        run: npm run test:study-store
+      - name: Backup validation
+        run: npm run test:backup
+      - name: Static boundary
+        run: npm run verify:static-boundary
+      - name: Browser A/B and optimistic concurrency
+        run: |
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then
+            echo 'No Chromium-compatible browser installed on the runner.'
+            exit 1
+          fi
+          CHROMIUM_PATH="$CHROME" npm run test:question-overrides-browser
+      - name: Static export build
+        run: npm run build
+      - name: Local server build (Turbopack)
+        run: npm run local:build
+      - name: Local server build (Webpack)
+        env:
+          FRONTEND_ATLAS_LOCAL_MODE: '1'
+          NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE: '1'
+        run: node node_modules/next/dist/bin/next build --webpack
