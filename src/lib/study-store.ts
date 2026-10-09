@@ -141,6 +141,37 @@ function accountDraftKey(ownerUserId: string, qid: string) {
   return encodeURIComponent(ownerUserId) + ":" + encodeURIComponent(qid);
 }
 
+export function draftProfileKey(draft: Pick<Draft, "ownerUserId" | "qid">) {
+  return draft.ownerUserId ? "account:" + accountDraftKey(draft.ownerUserId, draft.qid) : "legacy:" + encodeURIComponent(draft.qid);
+}
+
+export async function getCurrentStudyOwner(): Promise<string | null> {
+  if (process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE !== "1") return null;
+  const response = await fetch("/api/site-account", { credentials: "same-origin", cache: "no-store" });
+  if (!response.ok) throw new Error("无法确认当前站点账号，已停止读取私人学习记录。");
+  const payload: unknown = await response.json();
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) throw new Error("站点账号响应无效。");
+  const account = (payload as { account?: unknown }).account;
+  if (account === null) return null;
+  if (account && typeof account === "object" && !Array.isArray(account)) {
+    const id = (account as { id?: unknown }).id;
+    if (typeof id === "string" && id.length > 0) return id;
+  }
+  throw new Error("无法确认当前站点账号。");
+}
+
+export async function getVisibleStudySnapshot(): Promise<StudySnapshot> {
+  const [snapshot, accountId] = await Promise.all([getStudySnapshot(), getCurrentStudyOwner()]);
+  return filterStudySnapshotForAccount(snapshot, accountId);
+}
+
+export function subscribeToStudyAccountChanges(onChange: () => void): () => void {
+  if (process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE !== "1" || typeof BroadcastChannel === "undefined") return () => {};
+  const channel = new BroadcastChannel("frontend-atlas-site-account");
+  channel.onmessage = () => onChange();
+  return () => channel.close();
+}
+
 export function filterStudySnapshotForAccount(snapshot: StudySnapshot, ownerUserId: string | null): StudySnapshot {
   const sameOwner = (item: { ownerUserId?: string }) => ownerUserId ? item.ownerUserId === ownerUserId : !item.ownerUserId;
   return {
@@ -168,7 +199,14 @@ export function getStudySnapshot(): Promise<StudySnapshot> {
     };
     attemptsRequest.onsuccess = () => { attempts = attemptsRequest.result as Attempt[]; finish(); };
     draftsRequest.onsuccess = () => { drafts = draftsRequest.result as Draft[]; finish(); };
-    scopedDraftsRequest.onsuccess = () => { accountDrafts = (scopedDraftsRequest.result as Array<Draft & { storageKey: string }>).map(({ storageKey: _key, ...draft }) => draft); finish(); };
+    scopedDraftsRequest.onsuccess = () => {
+      accountDrafts = (scopedDraftsRequest.result as Array<Draft & { storageKey: string }>).map((row) => {
+        const { storageKey, ...draft } = row;
+        if (!storageKey) throw new Error("账号草稿缺少存储标识。");
+        return draft;
+      });
+      finish();
+    };
     preferencesRequest.onsuccess = () => { preferences = preferencesRequest.result as Preferences[]; finish(); };
     coachConversationsRequest.onsuccess = () => { coachConversations = coachConversationsRequest.result as CoachConversation[]; finish(); };
     for (const request of [attemptsRequest, draftsRequest, scopedDraftsRequest, preferencesRequest, coachConversationsRequest]) {
@@ -307,16 +345,20 @@ export function backupFromSnapshot(snapshot: StudySnapshot, contentSetVersion: s
 }
 
 export function replaceAllStudyData(backup: BackupFile): Promise<void> {
-  return transact([ATTEMPTS, DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
+  return transact([ATTEMPTS, DRAFTS, ACCOUNT_DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
     const attemptsStore = tx.objectStore(ATTEMPTS);
     const draftsStore = tx.objectStore(DRAFTS);
+    const accountDraftsStore = tx.objectStore(ACCOUNT_DRAFTS);
     const preferencesStore = tx.objectStore(PREFERENCES);
     const conversationsStore = tx.objectStore(COACH_CONVERSATIONS);
-    for (const request of [attemptsStore.clear(), draftsStore.clear(), preferencesStore.clear(), conversationsStore.clear()]) {
+    for (const request of [attemptsStore.clear(), draftsStore.clear(), accountDraftsStore.clear(), preferencesStore.clear(), conversationsStore.clear()]) {
       request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("清理现有数据失败。"));
     }
     for (const record of backup.attempts) attemptsStore.put(record);
-    for (const record of backup.drafts) draftsStore.put(record);
+    for (const record of backup.drafts) {
+      if (record.ownerUserId) accountDraftsStore.put({ ...record, storageKey: accountDraftKey(record.ownerUserId, record.qid) });
+      else draftsStore.put(record);
+    }
     for (const record of backup.preferences) preferencesStore.put(record);
     for (const record of backup.coachConversations) conversationsStore.put(record);
     setResult(undefined);
@@ -330,28 +372,37 @@ export function mergeStudyData(
   replaceConflictingPreferenceKeys: Set<string>,
   replaceConflictingConversationIds: Set<string>,
 ): Promise<void> {
-  return transact([ATTEMPTS, DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
+  return transact([ATTEMPTS, DRAFTS, ACCOUNT_DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
     const attemptsStore = tx.objectStore(ATTEMPTS);
     const draftsStore = tx.objectStore(DRAFTS);
+    const accountDraftsStore = tx.objectStore(ACCOUNT_DRAFTS);
     const preferencesStore = tx.objectStore(PREFERENCES);
     const conversationsStore = tx.objectStore(COACH_CONVERSATIONS);
     const existingAttemptsRequest = attemptsStore.getAll();
     const existingDraftsRequest = draftsStore.getAll();
+    const existingAccountDraftsRequest = accountDraftsStore.getAll();
     const existingPreferencesRequest = preferencesStore.getAll();
     const existingConversationsRequest = conversationsStore.getAll();
     let completed = 0;
     let existingAttempts: Attempt[] = [];
     let existingDrafts: Draft[] = [];
+    let existingAccountDrafts: Draft[] = [];
     let existingPreferences: Preferences[] = [];
     let existingConversations: CoachConversation[] = [];
     const apply = () => {
-      if (++completed !== 4) return;
+      if (++completed !== 5) return;
       const existingAttemptIds = new Set(existingAttempts.map((item) => item.attemptId));
       for (const attempt of backup.attempts) {
         if (!existingAttemptIds.has(attempt.attemptId) || replaceConflictingAttemptIds.has(attempt.attemptId)) attemptsStore.put(attempt);
       }
-      const existingDraftIds = new Set(existingDrafts.map((item) => item.qid));
-      for (const draft of backup.drafts) if (!existingDraftIds.has(draft.qid) || replaceConflictingDraftQids.has(draft.qid)) draftsStore.put(draft);
+      const existingDraftIds = new Set([...existingDrafts, ...existingAccountDrafts].map(draftProfileKey));
+      for (const draft of backup.drafts) {
+        const key = draftProfileKey(draft);
+        if (!existingDraftIds.has(key) || replaceConflictingDraftQids.has(key)) {
+          if (draft.ownerUserId) accountDraftsStore.put({ ...draft, storageKey: accountDraftKey(draft.ownerUserId, draft.qid) });
+          else draftsStore.put(draft);
+        }
+      }
       const existingPreferenceIds = new Set(existingPreferences.map((item) => item.key));
       for (const preference of backup.preferences) if (!existingPreferenceIds.has(preference.key) || replaceConflictingPreferenceKeys.has(preference.key)) preferencesStore.put(preference);
       const existingConversationIds = new Set(existingConversations.map((item) => item.conversationId));
@@ -362,17 +413,18 @@ export function mergeStudyData(
     };
     existingAttemptsRequest.onsuccess = () => { existingAttempts = existingAttemptsRequest.result as Attempt[]; apply(); };
     existingDraftsRequest.onsuccess = () => { existingDrafts = existingDraftsRequest.result as Draft[]; apply(); };
+    existingAccountDraftsRequest.onsuccess = () => { existingAccountDrafts = existingAccountDraftsRequest.result as Draft[]; apply(); };
     existingPreferencesRequest.onsuccess = () => { existingPreferences = existingPreferencesRequest.result as Preferences[]; apply(); };
     existingConversationsRequest.onsuccess = () => { existingConversations = existingConversationsRequest.result as CoachConversation[]; apply(); };
-    for (const request of [existingAttemptsRequest, existingDraftsRequest, existingPreferencesRequest, existingConversationsRequest]) {
+    for (const request of [existingAttemptsRequest, existingDraftsRequest, existingAccountDraftsRequest, existingPreferencesRequest, existingConversationsRequest]) {
       request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("无法校验本设备已有数据。"));
     }
   });
 }
 
 export function clearAllStudyData(): Promise<void> {
-  return transact([ATTEMPTS, DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
-    const requests = [tx.objectStore(ATTEMPTS).clear(), tx.objectStore(DRAFTS).clear(), tx.objectStore(PREFERENCES).clear(), tx.objectStore(COACH_CONVERSATIONS).clear()];
+  return transact([ATTEMPTS, DRAFTS, ACCOUNT_DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readwrite", (tx, setResult, fail) => {
+    const requests = [tx.objectStore(ATTEMPTS).clear(), tx.objectStore(DRAFTS).clear(), tx.objectStore(ACCOUNT_DRAFTS).clear(), tx.objectStore(PREFERENCES).clear(), tx.objectStore(COACH_CONVERSATIONS).clear()];
     for (const request of requests) request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("清除本设备数据失败。"));
     setResult(undefined);
   });
