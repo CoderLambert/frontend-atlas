@@ -63,3 +63,24 @@ npm run provider:bindings -- assign --user <better-auth-user-id> --profile <siwc
 恢复后，用户只能从该账号实时返回的可用模型中选择。每次助手运行都会重新核验 Better Auth session 的 userId、分配、绑定版本、SIWC session、计划权限和模型；浏览器不会接收 provider token，也不能指定代理地址。
 
 真实回复沿用同一套 SQLite run 管理器：用户消息与运行先原子保存，流式偏移可恢复，重复 `clientRunId` 不重复调用上游，取消、异常 EOF 和连接错误保留已落库的尾段并标记真实状态。刷新或重启后从 `/coach/sessions/` 恢复；旧 `/coach/` 的 IndexedDB 对话只会在用户预览并再次确认后导入，导入不会删除浏览器原记录。
+
+## Docker（Linux 本机）
+
+容器继续使用同一套本机安全边界：Next.js 和 SIWC 服务位于同一容器，SIWC 仍只监听 `127.0.0.1:4317`。因此 Compose 使用 Linux 的 host network，不会把 4317 作为独立容器端口公开。
+
+Compose 会在运行时读取（而不是复制进镜像）现有 `.env.local`，并把当前仓库的 `.local-data` 以及现有 `~/.config/frontend-atlas` 映射到容器。启动前先停止宿主机上的 `npm run local:dev`，避免两个进程同时占用 3000/4317。然后确认下面两个宿主机路径正是要继续使用的数据位置：
+
+```sh
+test -f .local-data/coach.sqlite
+test -f "$HOME/.config/frontend-atlas/siwc-profiles.json"
+docker compose build
+docker compose up
+```
+
+容器启动时会应用已有迁移并执行 SQLite `quick_check`。如果目标数据库文件不存在，它会拒绝静默创建空库。只有全新安装时，才显式允许第一次初始化：
+
+```sh
+FRONTEND_ATLAS_ALLOW_DB_INITIALIZE=1 docker compose up
+```
+
+首次初始化成功并确认数据卷后，后续启动不要再设置该变量。停止容器不会删除绑定目录中的数据库或 SIWC profile；不要使用会连同数据一起删除卷或宿主机目录的命令。

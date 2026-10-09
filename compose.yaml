@@ -1,0 +1,20 @@
+services:
+  frontend-atlas:
+    build:
+      context: .
+    network_mode: host
+    env_file:
+      - path: .env.local
+        required: true
+    environment:
+      FRONTEND_ATLAS_DB_PATH: /data/coach.sqlite
+      FRONTEND_ATLAS_ALLOW_DB_INITIALIZE: ${FRONTEND_ATLAS_ALLOW_DB_INITIALIZE:-0}
+    volumes:
+      - type: bind
+        source: ./.local-data
+        target: /data
+      - type: bind
+        source: ${HOME}/.config/frontend-atlas
+        target: /home/node/.config/frontend-atlas
+    security_opt:
+      - no-new-privileges:true

@@ -1,0 +1,17 @@
+.git
+.github
+.next
+.local-data
+.env
+.env.*
+!.env.example
+node_modules
+npm-debug.log*
+coverage
+playwright-report
+test-results
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.bak
