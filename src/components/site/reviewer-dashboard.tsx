@@ -14,6 +14,7 @@ import { cn } from "@/lib/cn";
 const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
   loading: () => <p className="markdown-preview-loading" aria-live="polite">正在加载 Markdown 预览…</p>,
 });
+const expectedAccountHeaderName = "x-frontend-atlas-account-id";
 
 type ReviewListItem = {
   id: string;
@@ -77,10 +78,11 @@ function statusError(data: Record<string, unknown> | null) {
   if (data?.error === "proposal_already_processed") return "该提案已被撤回或由另一位 reviewer 完成处理。";
   if (data?.error === "proposal_version_conflict") return "提案版本核对失败，未写入审核决定。";
   if (data?.error === "forbidden") return "reviewer 权限已撤销，本次操作未执行。";
+  if (data?.error === "account_changed") return "账号已切换；旧页面请求已拒绝，请重新加载后再审核。";
   return "审核操作失败，请刷新后核对当前状态。";
 }
 
-export function ReviewerDashboard() {
+export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }) {
   const [items, setItems] = useState<ReviewListItem[]>([]);
   const [detail, setDetail] = useState<ProposalDetail | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -91,89 +93,128 @@ export function ReviewerDashboard() {
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const requestEpoch = useRef(0);
-  const activeRequest = useRef<AbortController | null>(null);
+  const selectedIdRef = useRef<string | null>(null);
+  const listEpoch = useRef(0);
+  const detailEpoch = useRef(0);
+  const mutationEpoch = useRef(0);
+  const listRequest = useRef<AbortController | null>(null);
+  const detailRequest = useRef<AbortController | null>(null);
+  const mutationRequest = useRef<AbortController | null>(null);
 
-  const loadDetail = useCallback(async (proposalId: string, epoch: number, signal: AbortSignal) => {
+  const loadDetail = useCallback(async (proposalId: string) => {
+    detailRequest.current?.abort();
+    const controller = new AbortController();
+    detailRequest.current = controller;
+    const epoch = ++detailEpoch.current;
     setDetailLoading(true);
     setError("");
     try {
-      const response = await fetch(`/api/reviewer/proposals/${encodeURIComponent(proposalId)}`, { credentials: "same-origin", cache: "no-store", signal });
+      const response = await fetch(`/api/reviewer/proposals/${encodeURIComponent(proposalId)}`, {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+        headers: { [expectedAccountHeaderName]: reviewerUserId },
+      });
       const data = await readJson(response);
-      if (signal.aborted || requestEpoch.current !== epoch) return;
+      if (controller.signal.aborted || detailEpoch.current !== epoch) return;
       if (!response.ok) throw new Error(statusError(data));
       setDetail(data as unknown as ProposalDetail);
     } catch (cause) {
-      if (!signal.aborted && requestEpoch.current === epoch) setError(cause instanceof Error ? cause.message : "无法读取提案详情。");
+      if (!controller.signal.aborted && detailEpoch.current === epoch) setError(cause instanceof Error ? cause.message : "无法读取提案详情。");
     } finally {
-      if (!signal.aborted && requestEpoch.current === epoch) setDetailLoading(false);
+      if (!controller.signal.aborted && detailEpoch.current === epoch) setDetailLoading(false);
     }
-  }, []);
+  }, [reviewerUserId]);
 
   const loadList = useCallback(async (append: boolean, cursor?: string | null) => {
-    activeRequest.current?.abort();
+    listRequest.current?.abort();
     const controller = new AbortController();
-    activeRequest.current = controller;
-    const epoch = ++requestEpoch.current;
+    listRequest.current = controller;
+    const epoch = ++listEpoch.current;
     setLoading(true);
     setError("");
     try {
       const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
-      const response = await fetch(`/api/reviewer/proposals${query}`, { credentials: "same-origin", cache: "no-store", signal: controller.signal });
+      const response = await fetch(`/api/reviewer/proposals${query}`, {
+        credentials: "same-origin",
+        cache: "no-store",
+        signal: controller.signal,
+        headers: { [expectedAccountHeaderName]: reviewerUserId },
+      });
       const data = await readJson(response);
       if (!response.ok) throw new Error(statusError(data));
-      if (controller.signal.aborted || requestEpoch.current !== epoch) return;
+      if (controller.signal.aborted || listEpoch.current !== epoch) return;
       const proposals = (data?.proposals ?? []) as ReviewListItem[];
       setItems((current) => append ? [...current, ...proposals] : proposals);
       setNextCursor((data?.nextCursor as string | null | undefined) ?? null);
       if (!append) {
-        const initialId = proposals[0]?.id ?? null;
+        const retainedId = selectedIdRef.current && proposals.some((proposal) => proposal.id === selectedIdRef.current)
+          ? selectedIdRef.current
+          : null;
+        const initialId = retainedId ?? proposals[0]?.id ?? null;
+        selectedIdRef.current = initialId;
         setSelectedId(initialId);
         setDetail(null);
-        if (initialId) await loadDetail(initialId, epoch, controller.signal);
+        if (initialId) void loadDetail(initialId);
+        else {
+          detailRequest.current?.abort();
+          detailEpoch.current += 1;
+          setDetailLoading(false);
+        }
       }
     } catch (cause) {
-      if (!controller.signal.aborted && requestEpoch.current === epoch) setError(cause instanceof Error ? cause.message : "无法读取待审核提案。");
+      if (!controller.signal.aborted && listEpoch.current === epoch) setError(cause instanceof Error ? cause.message : "无法读取待审核提案。");
     } finally {
-      if (!controller.signal.aborted && requestEpoch.current === epoch) setLoading(false);
+      if (!controller.signal.aborted && listEpoch.current === epoch) setLoading(false);
     }
-  }, [loadDetail]);
+  }, [loadDetail, reviewerUserId]);
 
   useEffect(() => {
     void Promise.resolve().then(() => loadList(false));
     if (typeof BroadcastChannel === "undefined") {
       return () => {
-        requestEpoch.current += 1;
-        activeRequest.current?.abort();
+        listEpoch.current += 1;
+        detailEpoch.current += 1;
+        mutationEpoch.current += 1;
+        listRequest.current?.abort();
+        detailRequest.current?.abort();
+        mutationRequest.current?.abort();
       };
     }
     const channel = new BroadcastChannel("frontend-atlas-site-account");
     channel.onmessage = () => {
-      requestEpoch.current += 1;
-      activeRequest.current?.abort();
+      listEpoch.current += 1;
+      detailEpoch.current += 1;
+      mutationEpoch.current += 1;
+      listRequest.current?.abort();
+      detailRequest.current?.abort();
+      mutationRequest.current?.abort();
+      selectedIdRef.current = null;
       setItems([]);
       setDetail(null);
       setSelectedId(null);
       setNextCursor(null);
       setDecision(null);
       setSaving(false);
+      setDetailLoading(false);
       void loadList(false);
     };
     return () => {
-      requestEpoch.current += 1;
-      activeRequest.current?.abort();
+      listEpoch.current += 1;
+      detailEpoch.current += 1;
+      mutationEpoch.current += 1;
+      listRequest.current?.abort();
+      detailRequest.current?.abort();
+      mutationRequest.current?.abort();
       channel.close();
     };
   }, [loadList]);
 
-  async function selectProposal(proposalId: string) {
-    activeRequest.current?.abort();
-    const controller = new AbortController();
-    activeRequest.current = controller;
-    const epoch = ++requestEpoch.current;
+  function selectProposal(proposalId: string) {
+    selectedIdRef.current = proposalId;
     setSelectedId(proposalId);
     setDetail(null);
-    await loadDetail(proposalId, epoch, controller.signal);
+    void loadDetail(proposalId);
   }
 
   async function submitDecision() {
@@ -183,10 +224,10 @@ export function ReviewerDashboard() {
       setError("请填写审核说明，作为不可变审核记录的一部分。");
       return;
     }
-    activeRequest.current?.abort();
+    mutationRequest.current?.abort();
     const controller = new AbortController();
-    activeRequest.current = controller;
-    const epoch = requestEpoch.current;
+    mutationRequest.current = controller;
+    const epoch = ++mutationEpoch.current;
     setSaving(true);
     setError("");
     try {
@@ -195,7 +236,11 @@ export function ReviewerDashboard() {
         credentials: "same-origin",
         cache: "no-store",
         signal: controller.signal,
-        headers: { "content-type": "application/json", "x-frontend-atlas-request": "1" },
+        headers: {
+          "content-type": "application/json",
+          "x-frontend-atlas-request": "1",
+          [expectedAccountHeaderName]: reviewerUserId,
+        },
         body: JSON.stringify({
           decision,
           comment: trimmed,
@@ -204,18 +249,18 @@ export function ReviewerDashboard() {
         }),
       });
       const data = await readJson(response);
-      if (requestEpoch.current !== epoch) return;
+      if (controller.signal.aborted || mutationEpoch.current !== epoch) return;
       if (!response.ok) throw new Error(statusError(data));
       setDecision(null);
       setComment("");
       setSaving(false);
       await loadList(false);
     } catch (cause) {
-      if (requestEpoch.current === epoch && !(cause instanceof Error && cause.name === "AbortError")) {
+      if (!controller.signal.aborted && mutationEpoch.current === epoch && !(cause instanceof Error && cause.name === "AbortError")) {
         setError(cause instanceof Error ? cause.message : "审核操作失败。");
       }
     } finally {
-      if (requestEpoch.current === epoch) setSaving(false);
+      if (!controller.signal.aborted && mutationEpoch.current === epoch) setSaving(false);
     }
   }
 

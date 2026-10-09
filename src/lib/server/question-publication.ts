@@ -113,6 +113,23 @@ function findQuestion(map: JsonObject, qid: string) {
   return company ? { question: company, kind: "company" as const } : null;
 }
 
+function questionSearchText(question: JsonObject) {
+  const tags = Array.isArray(question.tags) ? question.tags : [];
+  const checkpoints = Array.isArray(question.checkpoints) ? question.checkpoints : [];
+  const content = Array.isArray(question.content) ? question.content as JsonObject[] : [];
+  return [
+    question.qid,
+    question.title,
+    question.primary,
+    question.subtopic,
+    question.company,
+    ...tags,
+    question.explanation_markdown,
+    ...checkpoints,
+    ...content.filter((block) => block.kind !== "code").map((block) => block.text),
+  ].filter(Boolean).join(" ").toLocaleLowerCase("zh-CN");
+}
+
 function updateQuestionSources(root: string, proposal: StoredProposal, targetVersion: string) {
   const mapPath = join(root, CONTENT_FILES.map);
   const chaptersPath = join(root, CONTENT_FILES.chapters);
@@ -173,9 +190,44 @@ function verifyPublishedTree(repoPath: string, commitSha: string, proposal: Stor
   if (chapterSet.content_version !== targetVersion || manifest.contentVersion !== targetVersion) {
     throw new Error("Published Git tree has the wrong target content version.");
   }
-  if (!Array.isArray(index) || !(index as JsonObject[]).some((item) => item.qid === proposal.qid && item.title === proposal.title)) {
+  const indexEntry = Array.isArray(index) ? (index as JsonObject[]).find((item) => item.qid === proposal.qid) : null;
+  if (!indexEntry || indexEntry.title !== proposal.title || indexEntry.searchText !== questionSearchText(located.question)) {
     throw new Error("Published Git tree has no matching generated question index entry.");
   }
+}
+
+function isAncestor(repoPath: string, ancestor: string, descendant: string) {
+  return git(repoPath, ["merge-base", "--is-ancestor", ancestor, descendant], { allowFailure: true }).status === 0;
+}
+
+function firstTargetCommitWithPublishedTree(
+  repoPath: string,
+  targetSha: string,
+  publicationCommitSha: string,
+  proposal: StoredProposal,
+  targetContentVersion: string,
+) {
+  const firstParentHistory = git(repoPath, ["rev-list", "--first-parent", "--reverse", targetSha]).stdout
+    .split("\n").filter(Boolean);
+  let lower = 0;
+  let upper = firstParentHistory.length - 1;
+  while (lower < upper) {
+    const middle = Math.floor((lower + upper) / 2);
+    if (isAncestor(repoPath, publicationCommitSha, firstParentHistory[middle])) upper = middle;
+    else lower = middle + 1;
+  }
+  const integrationIndex = lower;
+  let lastMismatch: unknown = null;
+  for (const commitSha of firstParentHistory.slice(integrationIndex)) {
+    try {
+      verifyPublishedTree(repoPath, commitSha, proposal, targetContentVersion);
+      return commitSha;
+    } catch (cause) {
+      lastMismatch = cause;
+    }
+  }
+  const detail = lastMismatch instanceof Error ? ` Last mismatch: ${lastMismatch.message}` : "";
+  throw new Error(`Target first-parent history contains the prepared commit but does not introduce the approved public snapshot.${detail}`);
 }
 
 export class QuestionPublicationRepository {
@@ -283,9 +335,7 @@ export function prepareQuestionPublication(repository: QuestionPublicationReposi
     run(generator.command, generator.args, worktreePath);
     const changedFiles = git(worktreePath, ["status", "--porcelain", "--untracked-files=all"]).stdout
       .split("\n").filter(Boolean).map((line) => line.slice(3));
-    if (!changedFiles.includes(CONTENT_FILES.map) || !changedFiles.includes(CONTENT_FILES.chapters)
-      || !changedFiles.includes(CONTENT_FILES.questionIndex) || !changedFiles.includes(CONTENT_FILES.manifest)
-      || changedFiles.some((path) => !ALLOWED_PUBLICATION_FILES.has(path))) {
+    if (changedFiles.some((path) => !ALLOWED_PUBLICATION_FILES.has(path))) {
       throw new Error(`Publication changed an unexpected file set: ${changedFiles.join(", ") || "none"}.`);
     }
     git(worktreePath, ["add", "--", ...Object.values(CONTENT_FILES)]);
@@ -338,13 +388,23 @@ export function reconcileQuestionPublication(repository: QuestionPublicationRepo
   if (!candidate.publication) return { kind: "not-prepared" as const };
   const repoPath = realpathSync(options.repoPath);
   const targetSha = git(repoPath, ["rev-parse", "--verify", `${options.targetRef}^{commit}`]).stdout;
-  if (git(repoPath, ["merge-base", "--is-ancestor", candidate.publication.commitSha, targetSha], { allowFailure: true }).status !== 0) {
+  if (!isAncestor(repoPath, candidate.publication.commitSha, targetSha)) {
     return { kind: "not-merged" as const };
   }
-  const descendants = git(repoPath, ["rev-list", "--ancestry-path", "--reverse", `${candidate.publication.commitSha}..${targetSha}`]).stdout
-    .split("\n").filter(Boolean);
-  const mergeCommitSha = descendants[0] ?? candidate.publication.commitSha;
-  verifyPublishedTree(repoPath, mergeCommitSha, candidate.proposal, candidate.publication.targetContentVersion);
+  if (candidate.publication.status === "published") {
+    const recordedCommitSha = candidate.publication.mergeCommitSha;
+    if (!recordedCommitSha) throw new Error("Published audit is missing its immutable target commit.");
+    if (!isAncestor(repoPath, recordedCommitSha, targetSha)) return { kind: "not-merged" as const };
+    verifyPublishedTree(repoPath, recordedCommitSha, candidate.proposal, candidate.publication.targetContentVersion);
+    return { kind: "already-published" as const, publication: candidate.publication };
+  }
+  const mergeCommitSha = firstTargetCommitWithPublishedTree(
+    repoPath,
+    targetSha,
+    candidate.publication.commitSha,
+    candidate.proposal,
+    candidate.publication.targetContentVersion,
+  );
   const result = repository.markPublished(options.operatorUserId, options.proposalId, mergeCommitSha);
   return result.kind === "published" || result.kind === "already-published"
     ? { kind: result.kind, publication: result.value } as const

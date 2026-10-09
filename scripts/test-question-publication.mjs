@@ -53,6 +53,19 @@ const baseline = publicQuestionSnapshot(publicQuestion);
 const baselineHash = publicQuestionSnapshotSha256(baseline);
 const contentVersion = chapters.content_version;
 
+function currentPublicState() {
+  const currentMap = JSON.parse(readFileSync(join(repoPath, "src/content/knowledge-map.source.json"), "utf8"));
+  const currentChapters = JSON.parse(readFileSync(join(repoPath, "src/content/knowledge-chapters.source.json"), "utf8"));
+  const question = currentMap.master_questions.find((item) => item.qid === qid)
+    ?? currentMap.company_questions.find((item) => item.qid === qid);
+  const snapshot = publicQuestionSnapshot(question);
+  return {
+    snapshot,
+    hash: publicQuestionSnapshotSha256(snapshot),
+    contentVersion: currentChapters.content_version,
+  };
+}
+
 const opened = openSqliteDatabase(databasePath);
 try {
   migrate(opened.db, { migrationsFolder: join(projectRoot, "src/lib/db/migrations") });
@@ -67,7 +80,15 @@ try {
   assert.equal(roles.grant("operator", "operator", "fixture-admin").kind, "granted");
   const publications = new QuestionPublicationRepository(opened.db);
   let sequence = 0;
-  const createProposal = ({ status = "approved", hash = baselineHash, ownerUserId = "owner" } = {}) => {
+  const createProposal = ({
+    status = "approved",
+    hash = baselineHash,
+    ownerUserId = "owner",
+    baseVersion = contentVersion,
+    title,
+    explanationMarkdown,
+    checkpoints,
+  } = {}) => {
     sequence += 1;
     const id = `publication-proposal-${sequence}`;
     const proposal = opened.db.insert(questionChangeProposals).values({
@@ -76,11 +97,11 @@ try {
       qid,
       sourceGenerationId: `generation-${sequence}`,
       sourceOverrideVersion: sequence,
-      baseContentVersion: contentVersion,
+      baseContentVersion: baseVersion,
       baseContentSha256: hash,
-      title: `发布后的题干 ${sequence}`,
-      explanationMarkdown: `## 发布后的讲解 ${sequence}\n\n仅来自不可变快照。`,
-      checkpointsJson: JSON.stringify([`发布检查点 ${sequence}`, "保持审计一致"]),
+      title: title ?? `发布后的题干 ${sequence}`,
+      explanationMarkdown: explanationMarkdown ?? `## 发布后的讲解 ${sequence}\n\n仅来自不可变快照。`,
+      checkpointsJson: JSON.stringify(checkpoints ?? [`发布检查点 ${sequence}`, "保持审计一致"]),
       summary: `发布申请 ${sequence}`,
       status,
       createdAt: new Date(now.getTime() + sequence * 1_000),
@@ -112,7 +133,7 @@ try {
   assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_publications").get().n, 0);
   assert.equal(readFileSync(join(repoPath, "src/content/knowledge-map.source.json"), "utf8"), originalMapBytes);
 
-  const success = createProposal();
+  const success = createProposal({ explanationMarkdown: "## HTTP 发布后的讲解\n\n仅来自不可变快照。" });
   writeFileSync(join(repoPath, "dirty-file.txt"), "do not overwrite\n");
   assert.throws(() => prepareQuestionPublication(publications, { repoPath, baseRef: "HEAD", operatorUserId: "operator", proposalId: success.id }), /worktree is dirty/u);
   assert.equal(readFileSync(join(repoPath, "dirty-file.txt"), "utf8"), "do not overwrite\n");
@@ -175,6 +196,73 @@ try {
   assert.equal(opened.client.prepare("SELECT status FROM question_change_proposals WHERE id = ?").get(success.id).status, "published");
   result = reconcileQuestionPublication(publications, { repoPath, targetRef: "HEAD", operatorUserId: "operator", proposalId: success.id });
   assert.equal(result.kind, "already-published");
+  run("git", ["commit", "--allow-empty", "-m", "Unrelated main commit after publication"]);
+  result = reconcileQuestionPublication(publications, { repoPath, targetRef: "HEAD", operatorUserId: "operator", proposalId: success.id });
+  assert.equal(result.kind, "already-published");
+  assert.equal(result.publication.mergeCommitSha, mergeCommit, "later target commits never rewrite the historical publication audit");
+
+  const caseBase = currentPublicState();
+  const caseOnly = createProposal({
+    hash: caseBase.hash,
+    baseVersion: caseBase.contentVersion,
+    title: caseBase.snapshot.title,
+    explanationMarkdown: caseBase.snapshot.explanationMarkdown.replace("HTTP", "http"),
+    checkpoints: caseBase.snapshot.checkpoints,
+  });
+  result = prepareQuestionPublication(publications, { repoPath, baseRef: "HEAD", operatorUserId: "operator", proposalId: caseOnly.id });
+  assert.equal(result.kind, "prepared", "case-only source changes remain publishable when the lower-cased search index is byte-identical");
+  const casePublication = result.publication;
+  const caseFiles = git("diff-tree", "--no-commit-id", "--name-only", "-r", casePublication.commitSha).split("\n").filter(Boolean);
+  assert.equal(caseFiles.includes("src/content/question-index.generated.json"), false, "unchanged generated files are not required to appear in the commit");
+  run("git", ["merge", "--ff-only", casePublication.branchName]);
+  const fastForwardCommit = git("rev-parse", "HEAD");
+  assert.equal(fastForwardCommit, casePublication.commitSha);
+  result = reconcileQuestionPublication(publications, { repoPath, targetRef: "HEAD", operatorUserId: "operator", proposalId: caseOnly.id });
+  assert.equal(result.kind, "published");
+  assert.equal(result.publication.mergeCommitSha, fastForwardCommit);
+  run("git", ["commit", "--allow-empty", "-m", "Post fast-forward target commit"]);
+  result = reconcileQuestionPublication(publications, { repoPath, targetRef: "HEAD", operatorUserId: "operator", proposalId: caseOnly.id });
+  assert.equal(result.kind, "already-published");
+  assert.equal(result.publication.mergeCommitSha, fastForwardCommit, "fast-forward reconciliation stays idempotent after the target advances");
+
+  const conflictBase = currentPublicState();
+  const conflictProposal = createProposal({
+    hash: conflictBase.hash,
+    baseVersion: conflictBase.contentVersion,
+    title: `${conflictBase.snapshot.title}（批准版本）`,
+    explanationMarkdown: "## 批准版本\n\n合并冲突不得静默丢弃。",
+    checkpoints: ["批准版本检查点"],
+  });
+  result = prepareQuestionPublication(publications, { repoPath, baseRef: "HEAD", operatorUserId: "operator", proposalId: conflictProposal.id });
+  assert.equal(result.kind, "prepared");
+  const conflictPublication = result.publication;
+  run("git", ["switch", conflictPublication.branchName]);
+  run("git", ["commit", "--allow-empty", "-m", "Publication branch intermediate commit"]);
+  const publicationIntermediate = git("rev-parse", "HEAD");
+  run("git", ["switch", "main"]);
+  const competingMap = JSON.parse(readFileSync(join(repoPath, "src/content/knowledge-map.source.json"), "utf8"));
+  const competingQuestion = competingMap.master_questions.find((item) => item.qid === qid);
+  competingQuestion.title = `${conflictBase.snapshot.title}（主线冲突版本）`;
+  competingQuestion.explanation_markdown = "## 主线冲突版本\n\n保留主线内容。";
+  competingQuestion.checkpoints = ["主线冲突检查点"];
+  competingQuestion.content = [{ kind: "paragraph", text: competingQuestion.explanation_markdown }];
+  writeFileSync(join(repoPath, "src/content/knowledge-map.source.json"), `${JSON.stringify(competingMap, null, 2)}\n`);
+  const competingChapters = JSON.parse(readFileSync(join(repoPath, "src/content/knowledge-chapters.source.json"), "utf8"));
+  competingChapters.content_version = `${conflictBase.contentVersion}.main-conflict`;
+  writeFileSync(join(repoPath, "src/content/knowledge-chapters.source.json"), `${JSON.stringify(competingChapters, null, 2)}\n`);
+  run(process.execPath, ["scripts/generate-content-index.mjs"]);
+  run("git", ["add", "src/content"]);
+  run("git", ["commit", "-m", "Create a conflicting mainline question version"]);
+  run("git", ["merge", "--no-ff", "-X", "ours", conflictPublication.branchName, "-m", "Merge publication while keeping conflicting mainline content"]);
+  assert.equal(git("rev-list", "--ancestry-path", "--reverse", `${conflictPublication.commitSha}..HEAD`).split("\n")[0], publicationIntermediate, "the old descendant heuristic would inspect the publication branch intermediate");
+  assert.throws(
+    () => reconcileQuestionPublication(publications, { repoPath, targetRef: "HEAD", operatorUserId: "operator", proposalId: conflictProposal.id }),
+    /does not introduce the approved public snapshot/u,
+  );
+  assert.deepEqual(opened.client.prepare("SELECT status, merge_commit_sha FROM question_publications WHERE proposal_id = ?").get(conflictProposal.id), {
+    status: "prepared",
+    merge_commit_sha: null,
+  }, "discarding the approved snapshot during conflict resolution never marks it published");
   assert.throws(() => opened.client.prepare("UPDATE question_publications SET merge_commit_sha = ? WHERE proposal_id = ?").run("forged-merge", success.id), /invalid question publication status transition/u);
   assert.throws(() => opened.client.prepare("DELETE FROM question_publications WHERE proposal_id = ?").run(success.id), /audit cannot be deleted/u);
 
@@ -189,8 +277,8 @@ try {
   const restored = openSqliteDatabase(auditBackupPath);
   try {
     assert.equal(restored.client.prepare("PRAGMA quick_check").pluck().get(), "ok");
-    assert.equal(restored.client.prepare("SELECT count(*) AS n FROM question_proposal_reviews").get().n, 3);
-    assert.equal(restored.client.prepare("SELECT count(*) AS n FROM question_publications").get().n, 1);
+    assert.equal(restored.client.prepare("SELECT count(*) AS n FROM question_proposal_reviews").get().n, 5);
+    assert.equal(restored.client.prepare("SELECT count(*) AS n FROM question_publications").get().n, 3);
     assert.equal(restored.client.prepare("SELECT count(*) AS n FROM site_role_grants").get().n, 1);
   } finally {
     restored.client.close();

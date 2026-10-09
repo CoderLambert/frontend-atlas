@@ -139,23 +139,33 @@ try {
   const now = Date.now();
   const insertUser = opened.client.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)");
   insertUser.run("browser-owner", "Browser Owner", "owner@example.test", now, now);
+  insertUser.run("browser-owner-delayed", "Delayed Browser Owner", "delayed-owner@example.test", now, now);
   insertUser.run("browser-reviewer", "Browser Reviewer", "reviewer@example.test", now, now);
+  insertUser.run("browser-reviewer-b", "Browser Reviewer B", "reviewer-b@example.test", now, now);
   insertUser.run("browser-normal", "Browser Normal", "normal@example.test", now, now);
   const insertSession = opened.client.prepare("INSERT INTO session (id, expires_at, token, created_at, updated_at, user_id) VALUES (?, ?, ?, ?, ?, ?)");
   insertSession.run("session-owner", now + 86_400_000, "owner-token", now, now, "browser-owner");
   insertSession.run("session-reviewer", now + 86_400_000, "reviewer-token", now, now, "browser-reviewer");
+  insertSession.run("session-reviewer-b", now + 86_400_000, "reviewer-b-token", now, now, "browser-reviewer-b");
   insertSession.run("session-normal", now + 86_400_000, "normal-token", now, now, "browser-normal");
   opened.client.prepare("INSERT INTO site_role_grants (id, user_id, role, created_by, created_at) VALUES (?, ?, 'reviewer', ?, ?)")
     .run("browser-role", "browser-reviewer", "browser-test-admin", now);
-  opened.client.prepare(`INSERT INTO question_change_proposals (
+  opened.client.prepare("INSERT INTO site_role_grants (id, user_id, role, created_by, created_at) VALUES (?, ?, 'reviewer', ?, ?)")
+    .run("browser-role-b", "browser-reviewer-b", "browser-test-admin", now);
+  const insertProposal = opened.client.prepare(`INSERT INTO question_change_proposals (
     id, owner_user_id, qid, source_generation_id, source_override_version, base_content_version,
     base_content_sha256, title, explanation_markdown, checkpoints_json, summary, status, created_at, updated_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)`)
-    .run(
-      "browser-proposal", "browser-owner", "D13", "browser-generation", 4, chapters.content_version,
-      baselineHash, "Browser 审核后的 D13 题干", "## Browser 提案讲解\n\n包含长 Markdown 与 `code`。", '["Browser 检查点一","Browser 检查点二"]',
-      "Browser 端到端审核摘要", now, now,
-    );
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)`);
+  insertProposal.run(
+    "browser-proposal", "browser-owner", "D13", "browser-generation", 4, chapters.content_version,
+    baselineHash, "Browser 审核后的 D13 题干", "## Browser 提案讲解\n\n包含长 Markdown 与 `code`。", '["Browser 检查点一","Browser 检查点二"]',
+    "Browser 端到端审核摘要", now, now,
+  );
+  insertProposal.run(
+    "browser-proposal-delayed", "browser-owner-delayed", "D13", "browser-generation-delayed", 2, chapters.content_version,
+    baselineHash, "Browser 延迟详情题干", "## Browser 延迟详情\n\n用于复现初始详情竞态。", '["延迟检查点"]',
+    "Browser 延迟详情摘要", now + 1_000, now + 1_000,
+  );
   opened.client.close();
 
   const port = await freePort();
@@ -184,35 +194,60 @@ try {
   const browser = await openBrowser(`${origin}/`);
 
   await setSessionCookie(browser, origin, "normal-token");
-  assert.equal(await browser.evaluate("fetch('/api/reviewer/proposals', { cache: 'no-store' }).then((response) => response.status)"), 403);
+  assert.equal(await browser.evaluate("fetch('/api/reviewer/proposals', { cache: 'no-store', headers: { 'x-frontend-atlas-account-id': 'browser-normal' } }).then((response) => response.status)"), 403);
   await browser.command("Page.navigate", { url: `${origin}/moderation/questions/` });
   await waitFor(() => browser.evaluate("document.body.innerText.includes('没有题库审核权限')"), "normal-user forbidden page");
   assert.equal(await browser.evaluate("document.body.innerText.includes('Browser 审核后的 D13 题干')"), false, "forbidden page leaks no proposal data");
   assert.equal(await browser.evaluate("document.querySelector('[data-testid=reviewer-navigation]') === null"), true);
 
   await setSessionCookie(browser, origin, "reviewer-token");
+  await browser.command("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+    const nativeFetch = window.fetch.bind(window);
+    let delayed = false;
+    window.fetch = (input, init) => {
+      const url = typeof input === "string" ? input : input.url;
+      const method = init?.method ?? (typeof input === "string" ? "GET" : input.method);
+      if (!delayed && method === "GET" && url.includes("/api/reviewer/proposals/browser-proposal-delayed")) {
+        delayed = true;
+        return new Promise((resolve, reject) => setTimeout(() => nativeFetch(input, init).then(resolve, reject), 1_200));
+      }
+      return nativeFetch(input, init);
+    };
+  })();` });
   await browser.command("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("document.querySelector('.reviewer-dashboard') !== null"), "reviewer dashboard");
+  await waitFor(() => browser.evaluate("document.body.innerText.includes('Browser 延迟详情题干') && document.body.innerText.includes('Browser 审核后的 D13 题干')"), "review queue");
+  await browser.evaluate("Array.from(document.querySelectorAll('.reviewer-queue li button')).find((button) => button.textContent.includes('Browser 审核后的 D13 题干')).click()");
   await waitFor(() => browser.evaluate("document.body.innerText.includes('Browser 审核后的 D13 题干') && document.body.innerText.includes('Browser 端到端审核摘要')"), "trusted proposal detail");
+  await delay(1_400);
+  assert.equal(await browser.evaluate("Array.from(document.querySelectorAll('.page-intro button')).find((button) => button.textContent.includes('刷新'))?.disabled"), false, "an aborted initial detail request never leaves list controls disabled");
   assert.equal(await browser.evaluate("document.body.innerText.includes('owner@example.test')"), false, "reviewer UI omits owner email");
   assert.equal(await browser.evaluate("document.querySelector('.reviewer-line-diff')?.getAttribute('tabindex')"), "0", "long diff is keyboard-scrollable");
   await waitFor(() => browser.evaluate("document.querySelectorAll('.reviewer-markdown-pair .coach-markdown').length === 2"), "on-demand Markdown snapshots");
   await browser.evaluate("Array.from(document.querySelectorAll('.reviewer-actions button')).find((button) => button.textContent.includes('批准')).click()");
   await waitFor(() => browser.evaluate("document.querySelector('#review-comment') !== null"), "approve confirmation");
   await browser.evaluate(setValue("#review-comment", "Browser reviewer 已核对题干、Markdown 与检查点。"));
+  await setSessionCookie(browser, origin, "reviewer-b-token");
+  await browser.evaluate("document.querySelector('[data-slot=alert-dialog-action]').click()");
+  await waitFor(() => browser.evaluate("document.body.innerText.includes('账号已切换；旧页面请求已拒绝')"), "stale reviewer request rejection");
+  assert.deepEqual(auditRow(), {
+    proposal: { status: "submitted" },
+    review: undefined,
+  }, "switching the cookie cannot attribute reviewer A's old confirmation to reviewer B");
+  await setSessionCookie(browser, origin, "reviewer-token");
   await browser.evaluate("document.querySelector('[data-slot=alert-dialog-action]').click()");
   await waitFor(() => auditRow().proposal.status === "approved", "approval audit");
   assert.deepEqual(auditRow(), {
     proposal: { status: "approved" },
     review: { reviewer_user_id: "browser-reviewer", decision: "approved", comment: "Browser reviewer 已核对题干、Markdown 与检查点。" },
   });
-  await waitFor(() => browser.evaluate("document.body.innerText.includes('当前没有待审核提案')"), "approved proposal leaves queue");
+  await waitFor(() => browser.evaluate("document.querySelectorAll('.reviewer-queue li button').length === 1 && document.body.innerText.includes('Browser 延迟详情题干')"), "approved proposal leaves queue");
 
   await setSessionCookie(browser, origin, "owner-token");
   await browser.command("Page.navigate", { url: `${origin}/questions/D13/` });
   await waitFor(() => browser.evaluate("document.querySelector('.question-proposal-history')?.innerText.includes('Browser reviewer 已核对题干、Markdown 与检查点。')"), "owner review history");
   assert.equal(await browser.evaluate("document.querySelector('[data-testid=reviewer-navigation]') === null"), true, "reviewer link disappears after account switch");
-  assert.equal(await browser.evaluate("fetch('/api/reviewer/proposals', { cache: 'no-store' }).then((response) => response.status)"), 403);
+  assert.equal(await browser.evaluate("fetch('/api/reviewer/proposals', { cache: 'no-store', headers: { 'x-frontend-atlas-account-id': 'browser-owner' } }).then((response) => response.status)"), 403);
 
   process.stdout.write("Question reviewer browser flow passed with verified Better Auth sessions and no Mock authorization.\n");
 } catch (error) {

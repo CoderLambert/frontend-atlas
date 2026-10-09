@@ -20,9 +20,10 @@ const baseline = { qid: "Q1", title: "公共题干", explanationMarkdown: "## �
 const contentVersion = "content-v1";
 const baselineHash = publicQuestionSnapshotSha256(baseline);
 
-function request(userId, method, proposalId = "", body) {
+function request(userId, method, proposalId = "", body, expectedAccountId = userId) {
   const headers = new Headers();
   if (userId) headers.set("cookie", `session=${userId}`);
+  if (expectedAccountId) headers.set("x-frontend-atlas-account-id", expectedAccountId);
   if (method !== "GET") {
     headers.set("origin", "http://localhost");
     headers.set("content-type", "application/json");
@@ -127,6 +128,15 @@ try {
   assert.equal(detail.diff.title.before, baseline.title);
   assert.equal(detail.diff.title.after, proposal.title);
   assert.equal(detail.diff.explanationMarkdown.changed, true);
+
+  response = await handlers.decide(
+    request("reviewer-b", "POST", proposal.id, decisionBody(proposal), "reviewer-a"),
+    proposal.id,
+  );
+  assert.equal(response.status, 409, "a stale reviewer page cannot attribute its decision to the new cookie account");
+  assert.equal((await response.json()).error, "account_changed");
+  assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_proposal_reviews").get().n, 0);
+  assert.equal(opened.client.prepare("SELECT status FROM question_change_proposals WHERE id = ?").get(proposal.id).status, "submitted");
 
   response = await handlers.decide(request("reviewer-a", "POST", proposal.id, { ...decisionBody(proposal), reviewerId: "reviewer-b" }), proposal.id);
   assert.equal(response.status, 400, "forged identity fields are rejected");

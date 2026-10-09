@@ -17,5 +17,5 @@ export default async function QuestionModerationPage() {
   const reviewerUserId = await verifiedAuthSessionReader.getUserId(request);
   if (!reviewerUserId || questionReviewService.access(reviewerUserId).kind !== "allowed") forbidden();
 
-  return <ReviewerDashboard />;
+  return <ReviewerDashboard reviewerUserId={reviewerUserId} />;
 }

@@ -27,6 +27,7 @@ type DecisionInput = {
 
 type Cursor = { createdAt: number; id: string };
 export const QUESTION_PROPOSAL_REVIEW_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+const expectedAccountHeaderName = "x-frontend-atlas-account-id";
 
 function encodeCursor(value: Cursor) {
   return Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -354,6 +355,9 @@ export function createQuestionReviewHandlers(
     const userId = await sessions.getUserId(request);
     return userId ? { userId } : null;
   };
+  const expectedAccountMatches = (request: Request, userId: string) => (
+    request.headers.get(expectedAccountHeaderName) === userId
+  );
   return {
     async access(request: Request) {
       const identity = await authenticate(request);
@@ -365,6 +369,7 @@ export function createQuestionReviewHandlers(
     async list(request: Request) {
       const identity = await authenticate(request);
       if (!identity) return json({ error: "unauthorized" }, 401);
+      if (!expectedAccountMatches(request, identity.userId)) return json({ error: "account_changed" }, 409);
       const url = new URL(request.url);
       const limitValue = url.searchParams.get("limit");
       const result = service.list(identity.userId, url.searchParams.get("cursor"), limitValue === null ? null : Number(limitValue));
@@ -375,6 +380,7 @@ export function createQuestionReviewHandlers(
     async detail(request: Request, proposalId: string) {
       const identity = await authenticate(request);
       if (!identity) return json({ error: "unauthorized" }, 401);
+      if (!expectedAccountMatches(request, identity.userId)) return json({ error: "account_changed" }, 409);
       const result = service.detail(identity.userId, proposalId);
       if (result.kind === "forbidden") return json({ error: "forbidden" }, 403);
       if (result.kind === "not-found") return json({ error: "not_found" }, 404);
@@ -386,6 +392,7 @@ export function createQuestionReviewHandlers(
       if (blocked) return blocked;
       const identity = await authenticate(request);
       if (!identity) return json({ error: "unauthorized" }, 401);
+      if (!expectedAccountMatches(request, identity.userId)) return json({ error: "account_changed" }, 409);
       const body = await readObject(request);
       if (!body) return json({ error: "invalid_request" }, 400);
       const result = service.decide(identity.userId, proposalId, body);
