@@ -12,17 +12,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { copyCodeText } from "@/lib/copy-code.mjs";
+import { isConfirmedAccountLink, isSocialProvider, type SocialProvider } from "@/lib/account-link-state";
 import { getLegacyCoachConversationsSnapshot, type CoachConversation } from "@/lib/study-store";
 
 const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
   loading: () => <p className="coach-markdown-loading">正在准备回复排版…</p>,
 });
 
-type SocialProvider = "github" | "google";
 type SiteAccount = { id: string; name: string; email: string; authMethod: "mock" | "oauth" };
 type SiteAccountStatus = {
   authConfigured: boolean;
   providers: Record<SocialProvider, boolean>;
+  linkedProviders: SocialProvider[];
   account: SiteAccount | null;
   mockAuthEnabled: boolean;
   assistantProvider: "local-mock" | "unavailable";
@@ -175,6 +176,35 @@ const requestHeaderName = "x-frontend-atlas-request";
 const requestHeaderValue = "1";
 const expectedAccountHeaderName = "x-frontend-atlas-account-id";
 const accountChangeChannelName = "frontend-atlas-site-account";
+const pendingAccountLinkKey = "frontend-atlas:pending-account-link:v1";
+
+function readPendingAccountLink() {
+  try {
+    const value: unknown = JSON.parse(window.sessionStorage.getItem(pendingAccountLinkKey) ?? "null");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record.accountId !== "string" || !isSocialProvider(record.provider)) return null;
+    return { accountId: record.accountId, provider: record.provider };
+  } catch {
+    return null;
+  }
+}
+
+function writePendingAccountLink(accountId: string, provider: SocialProvider) {
+  try {
+    window.sessionStorage.setItem(pendingAccountLinkKey, JSON.stringify({ accountId, provider }));
+  } catch {
+    // The server still enforces ownership; missing session storage only suppresses a success notice.
+  }
+}
+
+function clearPendingAccountLink() {
+  try {
+    window.sessionStorage.removeItem(pendingAccountLinkKey);
+  } catch {
+    // No persisted marker to clear.
+  }
+}
 
 class AccountApiError extends Error {
   status: number;
@@ -228,6 +258,13 @@ function legacyTextPreview(value: unknown) {
 
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError";
+}
+
+function accountLinkErrorMessage(code: string | null) {
+  if (code === "account_already_linked_to_different_user") return "这个提供方身份已属于另一个知序账号，未执行自动合并。请先确认要保留的账号与数据，再由操作员处理迁移。";
+  if (code === "email_does_not_match") return "提供方返回的邮箱与当前知序账号不同，安全策略已拒绝绑定。";
+  if (code === "access_denied") return "提供方授权已取消，没有修改当前知序账号。";
+  return "提供方绑定没有完成；当前账号与已有登录方式保持不变。";
 }
 
 function messageStatusLabel(message: ConversationMessage) {
@@ -676,6 +713,30 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
       setAccount(nextStatus.account);
       setSessionLoading(false);
       setError("");
+      const currentUrl = new URL(window.location.href);
+      const accountLinkResult = currentUrl.searchParams.get("accountLink");
+      if (accountLinkResult) {
+        setNotice("");
+        const accountLinkError = currentUrl.searchParams.get("error");
+        const callbackProvider = currentUrl.searchParams.get("accountLinkProvider");
+        const pendingLink = readPendingAccountLink();
+        const confirmed = isConfirmedAccountLink({
+          result: accountLinkResult,
+          callbackProvider,
+          pending: pendingLink,
+          accountId: nextStatus.account?.id ?? null,
+          linkedProviders: nextStatus.linkedProviders,
+        });
+        if (confirmed) setNotice("新的登录提供方已明确绑定到当前知序账号。");
+        else if (accountLinkResult === "success") setError("服务器未确认这个登录提供方已绑定到当前知序账号。");
+        else setError(accountLinkErrorMessage(accountLinkError));
+        clearPendingAccountLink();
+        currentUrl.searchParams.delete("accountLink");
+        currentUrl.searchParams.delete("accountLinkProvider");
+        currentUrl.searchParams.delete("error");
+        currentUrl.searchParams.delete("error_description");
+        window.history.replaceState(null, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
+      }
       if (options.broadcastChange !== false && previousAccountId !== (nextStatus.account?.id ?? null)) notifyAccountChange();
       if (nextStatus.account) {
         await Promise.all([
@@ -754,6 +815,36 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
     } catch (cause) {
       reportError(cause, epoch);
       if (epoch === epochRef.current) setSessionLoading(false);
+    } finally {
+      releaseRequest(controller);
+      if (epoch === epochRef.current) setBusyAction(null);
+    }
+  }
+
+  async function linkProvider(provider: SocialProvider) {
+    const targetAccount = accountRef.current;
+    if (!targetAccount || targetAccount.authMethod !== "oauth" || !status?.providers[provider]
+      || status.linkedProviders.includes(provider) || busyAction || messageBusy) return;
+    const epoch = epochRef.current;
+    setBusyAction("login");
+    setError("");
+    setNotice("");
+    const controller = registerRequest();
+    try {
+      const response = await requestJson<{ url?: string; redirect?: boolean }>("/api/auth/link-social", {
+        method: "POST",
+        body: { provider },
+        signal: controller.signal,
+        accountId: targetAccount.id,
+      });
+      if (epoch !== epochRef.current || accountRef.current?.id !== targetAccount.id || controller.signal.aborted) return;
+      if (response.url) {
+        writePendingAccountLink(targetAccount.id, provider);
+        window.location.assign(response.url);
+      }
+      else throw new Error("认证服务没有返回绑定授权地址。");
+    } catch (cause) {
+      reportError(cause, epoch);
     } finally {
       releaseRequest(controller);
       if (epoch === epochRef.current) setBusyAction(null);
@@ -1549,6 +1640,32 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
               </Button>
             </CardContent>
           </Card>
+
+          {account.authMethod === "oauth" && (
+            <Card data-testid="linked-provider-settings">
+              <CardHeader>
+                <CardTitle><LogIn size={17} aria-hidden="true" />站点登录方式</CardTitle>
+                <p>只会在当前已验证会话中发起明确绑定。邮箱不同或已属于其他知序账号的提供方身份会被拒绝，不会自动合并账号或数据。</p>
+              </CardHeader>
+              <CardContent className="coach-account-provider-grid">
+                {(["github", "google"] as const).map((provider) => {
+                  const linked = (status?.linkedProviders ?? []).includes(provider);
+                  const configured = status?.providers[provider] === true;
+                  return (
+                    <div key={provider} className="coach-account-provider-row">
+                      <div><strong>{providerLabels[provider]}</strong><span>{linked ? "已绑定到当前账号" : configured ? "可明确绑定" : "尚未配置"}</span></div>
+                      {linked ? <Badge variant="secondary" data-testid={`linked-provider-${provider}`}><CheckCircle2 size={13} aria-hidden="true" />已绑定</Badge>
+                        : configured ? (
+                          <Button type="button" variant="outline" onClick={() => void linkProvider(provider)} disabled={busyAction !== null || sessionLoading || messageBusy} data-testid={`link-provider-${provider}`}>
+                            {busyAction === "login" ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <LogIn size={15} aria-hidden="true" />}绑定 {providerLabels[provider]}
+                          </Button>
+                        ) : <Badge variant="outline">未启用</Badge>}
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          )}
 
           {account.authMethod === "oauth" && (
             <Card className="coach-account-legacy-import" data-testid="legacy-import">

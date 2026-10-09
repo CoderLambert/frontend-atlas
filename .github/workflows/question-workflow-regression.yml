@@ -1,4 +1,4 @@
-name: Private question override regression
+name: Private question workflows
 
 on:
   pull_request:
@@ -28,11 +28,25 @@ jobs:
         run: npm run lint
       - name: Question override API and migration
         run: npm run test:question-overrides
+      - name: Question proposal snapshot and isolation
+        run: npm run test:question-proposals
+      - name: Explicit OAuth link contract
+        run: npm run test:auth-link
+      - name: SIWC service contract
+        run: npm run test:siwc
+      - name: Assistant run persistence
+        run: npm run test:assistant-run
+      - name: Server chat persistence
+        run: npm run test:server-chat
+      - name: Legacy chat import
+        run: npm run test:legacy-import
+      - name: Controlled provider connections
+        run: npm run test:provider-connection
       - name: IndexedDB compatibility
         run: npm run test:study-store
       - name: Backup validation
         run: npm run test:backup
-      - name: Browser A/B and optimistic concurrency
+      - name: Browser account, assistant, and question flows
         run: |
           CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
           if [ -z "$CHROME" ]; then
@@ -40,6 +54,8 @@ jobs:
             exit 1
           fi
           CHROMIUM_PATH="$CHROME" npm run test:question-overrides-browser
+          CHROMIUM_PATH="$CHROME" npm run test:coach-account-browser
+          CHROMIUM_PATH="$CHROME" npm run test:coach-assistant-browser
       - name: Static export build
         run: npm run build
       - name: Static boundary

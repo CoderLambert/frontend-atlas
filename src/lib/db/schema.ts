@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import { check, foreignKey, index, integer, primaryKey, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { check, foreignKey, index, integer, primaryKey, sqliteTable, text, unique, uniqueIndex } from "drizzle-orm/sqlite-core";
 import { account, session, user, verification } from "./auth-schema.ts";
 
 export { account, session, user, verification };
@@ -7,6 +7,7 @@ export { account, session, user, verification };
 export type CoachMessageStatus = "pending" | "streaming" | "complete" | "interrupted" | "failed" | "cancelled";
 export type CoachMessageRole = "user" | "assistant";
 export type CoachAssistantRunStatus = CoachMessageStatus;
+export type QuestionChangeProposalStatus = "submitted" | "withdrawn";
 
 export const coachConversations = sqliteTable("coach_conversations", {
   id: text("id").primaryKey(),
@@ -100,6 +101,44 @@ export const questionPrivateOverrides = sqliteTable("question_private_overrides"
 }, (table) => [
   primaryKey({ name: "question_private_overrides_owner_qid_pk", columns: [table.ownerUserId, table.qid] }),
   index("question_private_overrides_owner_updated_idx").on(table.ownerUserId, table.updatedAt),
+]);
+
+export const questionChangeProposals = sqliteTable("question_change_proposals", {
+  id: text("id").primaryKey(),
+  ownerUserId: text("owner_user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  qid: text("qid").notNull(),
+  sourceGenerationId: text("source_generation_id").notNull(),
+  sourceOverrideVersion: integer("source_override_version").notNull(),
+  baseContentVersion: text("base_content_version").notNull(),
+  title: text("title").notNull(),
+  explanationMarkdown: text("explanation_markdown").notNull(),
+  checkpointsJson: text("checkpoints_json").notNull(),
+  summary: text("summary").notNull(),
+  status: text("status").$type<QuestionChangeProposalStatus>().notNull().default("submitted"),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+  withdrawnAt: integer("withdrawn_at", { mode: "timestamp_ms" }),
+}, (table) => [
+  index("question_change_proposals_owner_qid_created_idx").on(table.ownerUserId, table.qid, table.createdAt),
+  uniqueIndex("question_change_proposals_owner_qid_active_unique")
+    .on(table.ownerUserId, table.qid)
+    .where(sql`${table.status} = 'submitted'`),
+  check("question_change_proposals_status_check", sql`${table.status} in ('submitted', 'withdrawn')`),
+]);
+
+export const questionChangeProposalSources = sqliteTable("question_change_proposal_sources", {
+  ownerUserId: text("owner_user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  qid: text("qid").notNull(),
+  sourceGenerationId: text("source_generation_id").notNull(),
+  sourceOverrideVersion: integer("source_override_version").notNull(),
+  proposalId: text("proposal_id").notNull().references(() => questionChangeProposals.id, { onDelete: "cascade" }),
+  claimedAt: integer("claimed_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  primaryKey({
+    name: "question_change_proposal_sources_pk",
+    columns: [table.ownerUserId, table.qid, table.sourceGenerationId, table.sourceOverrideVersion],
+  }),
+  uniqueIndex("question_change_proposal_sources_proposal_unique").on(table.proposalId),
 ]);
 
 export const coachConversationsRelations = relations(coachConversations, ({ many, one }) => ({

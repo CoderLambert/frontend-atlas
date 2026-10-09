@@ -1,9 +1,16 @@
 import { toNextJsHandler } from "better-auth/next-js";
-import { auth } from "@/lib/auth";
-import { authSessionReader } from "@/lib/server/auth-session";
+import { auth, configuredSocialProviders } from "@/lib/auth";
+import { authSessionReader, verifiedAuthSessionReader } from "@/lib/server/auth-session";
+import { createAuthPostRouteHandler } from "@/lib/server/auth-post-route-handler";
 
 export const runtime = "nodejs";
 const handlers = auth ? toNextJsHandler(auth) : null;
+const handlePost = handlers ? createAuthPostRouteHandler({
+  delegate: handlers.POST,
+  sessions: authSessionReader,
+  verifiedSessions: verifiedAuthSessionReader,
+  configuredProviders: configuredSocialProviders,
+}) : null;
 
 function authNotConfigured() {
   return Response.json({ error: "authentication_not_configured" }, {
@@ -16,12 +23,6 @@ export function GET(request: Request) {
   return handlers ? handlers.GET(request) : authNotConfigured();
 }
 
-export async function POST(request: Request) {
-  if (handlers && new URL(request.url).pathname.replace(/\/+$/u, "") === "/api/auth/sign-out") {
-    const expectedAccountId = request.headers.get("x-frontend-atlas-account-id");
-    if (!expectedAccountId || expectedAccountId !== await authSessionReader.getUserId(request)) {
-      return Response.json({ error: "account_changed" }, { status: 409, headers: { "cache-control": "no-store" } });
-    }
-  }
-  return handlers ? handlers.POST(request) : authNotConfigured();
+export function POST(request: Request) {
+  return handlePost ? handlePost(request) : authNotConfigured();
 }

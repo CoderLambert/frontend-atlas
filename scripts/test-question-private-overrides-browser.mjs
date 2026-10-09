@@ -100,6 +100,12 @@ function rows() {
   finally { opened.client.close(); }
 }
 
+function proposalRows() {
+  const opened = openSqliteDatabase(databasePath);
+  try { return opened.client.prepare("SELECT id, owner_user_id, qid, source_generation_id, source_override_version, title, summary, status FROM question_change_proposals ORDER BY created_at").all(); }
+  finally { opened.client.close(); }
+}
+
 try {
   assert.ok(existsSync(chromiumPath));
   let opened = openSqliteDatabase(databasePath);
@@ -135,18 +141,26 @@ try {
   await browser.evaluate("document.querySelector('[data-testid=question-private-save]').click()");
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A override applied");
   assert.deepEqual(rows().map((row) => ({ owner: row.owner_user_id, title: row.title, version: row.version })), [{ owner: "mock-user-a", title: "A 的私人 D13 题干", version: 1 }]);
+  await browser.evaluate("document.querySelector('[data-testid=question-proposal-open]').click()");
+  await browser.evaluate(setValue("#question-proposal-summary", "A 提交公共题库审核：补充边界和检查点。"));
+  await browser.evaluate("document.querySelector('[data-testid=question-proposal-submit]').click()");
+  await waitFor(() => proposalRows().length === 1, "A proposal SQLite snapshot");
+  assert.deepEqual(proposalRows().map((row) => ({ owner: row.owner_user_id, title: row.title, version: row.source_override_version, status: row.status })), [{ owner: "mock-user-a", title: "A 的私人 D13 题干", version: 1, status: "submitted" }]);
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-status]')?.innerText.includes('变更申请待审核')"), "A proposal status");
   await waitFor(() => browser.evaluate("document.querySelector('#answer-draft') !== null"), "A study record ready");
   await browser.evaluate(setValue("#answer-draft", "只有 A 的私人作答"));
   await waitFor(() => browser.evaluate("document.querySelector('.local-save-note')?.textContent.includes('已保存至本设备')"), "A practice saved");
 
   await browser.command("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A override after refresh");
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-status]')?.innerText.includes('私人版本 v1')"), "A proposal after refresh");
   await browser.evaluate("document.querySelector('[data-testid=question-private-open]').click()");
   await waitFor(() => browser.evaluate("document.querySelector('#private-question-title') !== null"), "A editor before account switch");
   assert.equal(await login("mock-user-b"), 200);
   await browser.evaluate("(() => { const channel = new BroadcastChannel('frontend-atlas-site-account'); channel.postMessage({ type: 'account-changed' }); channel.close(); return true; })()");
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-private-open]')?.innerText.includes('创建私人版本') && document.querySelector('#private-question-title') === null"), "B sees public version and A's editor closes");
   assert.notEqual(await browser.evaluate("document.querySelector('.question-heading h1')?.textContent"), "A 的私人 D13 题干", "B cannot see A's private title");
+  assert.equal(await browser.evaluate("document.querySelector('[data-testid=question-proposal-status]') === null"), true, "B cannot see A's proposal");
   await waitFor(() => browser.evaluate("document.querySelector('#answer-draft')?.value === ''"), "B never sees A's private answer");
   await browser.evaluate(setValue("#answer-draft", "只有 B 的作答"));
   await waitFor(() => browser.evaluate("document.querySelector('.local-save-note')?.textContent.includes('已保存至本设备')"), "B practice saved");
@@ -162,24 +176,38 @@ try {
   await browser.evaluate("(() => { const channel = new BroadcastChannel('frontend-atlas-site-account'); channel.postMessage({ type: 'account-changed' }); channel.close(); return true; })()");
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A restored after account switch");
   await waitFor(() => browser.evaluate("document.querySelector('#answer-draft')?.value === '只有 A 的私人作答'"), "A gets only A's answer again");
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-status]') !== null"), "A proposal restored after account switch");
   const previousGeneration = rows().find((row) => row.owner_user_id === "mock-user-a").generation_id;
   await browser.evaluate("document.querySelector('[data-testid=question-private-reset]').click()");
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-private-reset-confirm]') !== null"), "reset confirmation");
   await browser.evaluate("document.querySelector('[data-testid=question-private-reset-confirm]').click()");
   await waitFor(() => rows().length === 1, "A row removed");
   assert.equal(rows()[0].owner_user_id, "mock-user-b", "reset removes only A's private override");
+  assert.equal(proposalRows().find((row) => row.owner_user_id === "mock-user-a").status, "submitted", "reset keeps the submitted snapshot");
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-private-open]')?.innerText.includes('创建私人版本')"), "public version restored for A");
+  await browser.evaluate("document.querySelector('[data-testid=question-proposal-withdraw]').click()");
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-withdraw-confirm]') !== null"), "withdraw confirmation");
+  await browser.evaluate("document.querySelector('[data-testid=question-proposal-withdraw-confirm]').click()");
+  await waitFor(() => proposalRows().find((row) => row.owner_user_id === "mock-user-a")?.status === "withdrawn", "A proposal withdrawn");
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-status]') === null && document.querySelector('[data-testid=question-proposal-withdraw-confirm]') === null"), "withdrawal reflected in the UI");
   await browser.evaluate("document.querySelector('[data-testid=question-private-open]').click()");
   await browser.evaluate(setValue("#private-question-title", "A 再次创建"));
   await browser.evaluate("document.querySelector('[data-testid=question-private-save]').click()");
   await waitFor(() => rows().length === 2 && rows().some((row) => row.title === "A 再次创建"), "A recreated after reset");
   const recreated = rows().find((row) => row.owner_user_id === "mock-user-a");
   assert.notEqual(recreated.generation_id, previousGeneration, "reset and recreation change the generation");
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-open]') !== null"), "replacement proposal action");
+  await browser.evaluate("document.querySelector('[data-testid=question-proposal-open]').click()");
+  await browser.evaluate(setValue("#question-proposal-summary", "基于重新创建的私人版本再次申请。"));
+  await browser.evaluate("document.querySelector('[data-testid=question-proposal-submit]').click()");
+  await waitFor(() => proposalRows().filter((row) => row.owner_user_id === "mock-user-a").length === 2, "A replacement proposal");
+  const activeReplacement = proposalRows().find((row) => row.owner_user_id === "mock-user-a" && row.status === "submitted");
+  assert.equal(activeReplacement.source_generation_id, recreated.generation_id, "replacement proposal snapshots the new generation");
   const staleResponse = await browser.evaluate(`fetch('/api/questions/D13/private-override', { method: 'DELETE', headers: { 'content-type': 'application/json', 'x-frontend-atlas-request': '1', 'x-frontend-atlas-account-id': 'mock-user-a' }, body: JSON.stringify({ expectedVersion: 1, expectedGenerationId: ${JSON.stringify(previousGeneration)} }) }).then((res) => res.status)`);
   assert.equal(staleResponse, 409, "old page cannot delete recreated private version");
   assert.equal(rows().find((row) => row.owner_user_id === "mock-user-a").title, "A 再次创建");
 
-  process.stdout.write("Question private override browser flow passed: login, private save, refresh recovery, account isolation, and reset.\n");
+  process.stdout.write("Question private override browser flow passed: login, private save, proposal snapshot, refresh recovery, account isolation, withdrawal, and reset.\n");
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
   process.exitCode = 1;
