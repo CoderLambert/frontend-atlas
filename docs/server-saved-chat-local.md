@@ -64,6 +64,8 @@ npm run provider:bindings -- assign --user <better-auth-user-id> --profile <siwc
 
 真实回复沿用同一套 SQLite run 管理器：用户消息与运行先原子保存，流式偏移可恢复，重复 `clientRunId` 不重复调用上游，取消、异常 EOF 和连接错误保留已落库的尾段并标记真实状态。刷新或重启后从 `/coach/sessions/` 恢复；旧 `/coach/` 的 IndexedDB 对话只会在用户预览并再次确认后导入，导入不会删除浏览器原记录。
 
+同一会话继续发送时，服务端会按保存顺序携带最近 39 条非空 user/assistant 消息（包含本次新 user 消息，但排除尚未生成的 assistant 占位）作为多轮上下文。上下文只从当前登录用户拥有的 SQLite 会话构造，客户端不能替换历史消息或读取其他用户的会话；新开会话不会继承旧会话上下文。
+
 ## Docker（Linux 本机）
 
 容器继续使用同一套本机安全边界：Next.js 和 SIWC 服务位于同一容器，SIWC 仍只监听 `127.0.0.1:4317`。因此 Compose 使用 Linux 的 host network，不会把 4317 作为独立容器端口公开。
