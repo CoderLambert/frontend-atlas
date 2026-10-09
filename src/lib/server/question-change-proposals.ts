@@ -17,6 +17,17 @@ type SubmitInput = {
   summary: string;
 };
 
+function isSourceSnapshotUniqueViolation(cause: unknown) {
+  if (!cause || typeof cause !== "object") return false;
+  const error = cause as { code?: unknown; message?: unknown };
+  return error.code === "SQLITE_CONSTRAINT_UNIQUE"
+    && typeof error.message === "string"
+    && error.message.includes("question_change_proposals.owner_user_id")
+    && error.message.includes("question_change_proposals.qid")
+    && error.message.includes("question_change_proposals.source_generation_id")
+    && error.message.includes("question_change_proposals.source_override_version");
+}
+
 export class QuestionChangeProposalRepository {
   private readonly database: Database;
 
@@ -33,47 +44,67 @@ export class QuestionChangeProposalRepository {
   }
 
   submit(ownerUserId: string, qid: string, input: SubmitInput) {
-    return this.database.transaction((transaction) => {
-      const active = transaction.select().from(questionChangeProposals).where(and(
+    try {
+      return this.database.transaction((transaction) => {
+        const priorSource = transaction.select().from(questionChangeProposals).where(and(
+          eq(questionChangeProposals.ownerUserId, ownerUserId),
+          eq(questionChangeProposals.qid, qid),
+          eq(questionChangeProposals.sourceGenerationId, input.expectedGenerationId),
+          eq(questionChangeProposals.sourceOverrideVersion, input.expectedVersion),
+        )).limit(1).all()[0] ?? null;
+        if (priorSource) {
+          return priorSource.status === "submitted"
+            ? { kind: "already-submitted" as const, value: priorSource }
+            : { kind: "withdrawn-source" as const, value: priorSource };
+        }
+
+        const active = transaction.select().from(questionChangeProposals).where(and(
+          eq(questionChangeProposals.ownerUserId, ownerUserId),
+          eq(questionChangeProposals.qid, qid),
+          eq(questionChangeProposals.status, "submitted"),
+        )).orderBy(desc(questionChangeProposals.createdAt)).limit(1).all()[0] ?? null;
+        if (active) return { kind: "active-conflict" as const, current: active };
+
+        const source = transaction.select().from(questionPrivateOverrides).where(and(
+          eq(questionPrivateOverrides.ownerUserId, ownerUserId),
+          eq(questionPrivateOverrides.qid, qid),
+        )).limit(1).all()[0] ?? null;
+        if (!source) return { kind: "override-required" as const };
+        if (source.generationId !== input.expectedGenerationId || source.version !== input.expectedVersion) {
+          return { kind: "override-conflict" as const, current: source };
+        }
+
+        const now = new Date();
+        const created = transaction.insert(questionChangeProposals).values({
+          id: randomUUID(),
+          ownerUserId,
+          qid,
+          sourceGenerationId: source.generationId,
+          sourceOverrideVersion: source.version,
+          baseContentVersion: source.baseContentVersion,
+          title: source.title,
+          explanationMarkdown: source.explanationMarkdown,
+          checkpointsJson: source.checkpointsJson,
+          summary: input.summary,
+          status: "submitted",
+          createdAt: now,
+          updatedAt: now,
+        }).returning().get();
+        return { kind: "submitted" as const, value: created };
+      });
+    } catch (cause) {
+      if (!isSourceSnapshotUniqueViolation(cause)) throw cause;
+      const priorSource = this.database.select().from(questionChangeProposals).where(and(
         eq(questionChangeProposals.ownerUserId, ownerUserId),
         eq(questionChangeProposals.qid, qid),
-        eq(questionChangeProposals.status, "submitted"),
-      )).orderBy(desc(questionChangeProposals.createdAt)).limit(1).all()[0] ?? null;
-      if (active) {
-        const sameSnapshot = active.sourceGenerationId === input.expectedGenerationId
-          && active.sourceOverrideVersion === input.expectedVersion;
-        return sameSnapshot
-          ? { kind: "already-submitted" as const, value: active }
-          : { kind: "active-conflict" as const, current: active };
-      }
-
-      const source = transaction.select().from(questionPrivateOverrides).where(and(
-        eq(questionPrivateOverrides.ownerUserId, ownerUserId),
-        eq(questionPrivateOverrides.qid, qid),
+        eq(questionChangeProposals.sourceGenerationId, input.expectedGenerationId),
+        eq(questionChangeProposals.sourceOverrideVersion, input.expectedVersion),
       )).limit(1).all()[0] ?? null;
-      if (!source) return { kind: "override-required" as const };
-      if (source.generationId !== input.expectedGenerationId || source.version !== input.expectedVersion) {
-        return { kind: "override-conflict" as const, current: source };
-      }
-
-      const now = new Date();
-      const created = transaction.insert(questionChangeProposals).values({
-        id: randomUUID(),
-        ownerUserId,
-        qid,
-        sourceGenerationId: source.generationId,
-        sourceOverrideVersion: source.version,
-        baseContentVersion: source.baseContentVersion,
-        title: source.title,
-        explanationMarkdown: source.explanationMarkdown,
-        checkpointsJson: source.checkpointsJson,
-        summary: input.summary,
-        status: "submitted",
-        createdAt: now,
-        updatedAt: now,
-      }).returning().get();
-      return { kind: "submitted" as const, value: created };
-    });
+      if (!priorSource) throw cause;
+      return priorSource.status === "submitted"
+        ? { kind: "already-submitted" as const, value: priorSource }
+        : { kind: "withdrawn-source" as const, value: priorSource };
+    }
   }
 
   withdraw(ownerUserId: string, qid: string, proposalId: string) {
@@ -113,6 +144,9 @@ export class QuestionChangeProposalService {
     if (!input) return { kind: "invalid" as const };
     const result = this.repository.submit(ownerUserId, qid, input);
     if (result.kind === "submitted" || result.kind === "already-submitted") {
+      return { kind: result.kind, value: presentProposal(result.value) } as const;
+    }
+    if (result.kind === "withdrawn-source") {
       return { kind: result.kind, value: presentProposal(result.value) } as const;
     }
     if (result.kind === "active-conflict") {
@@ -240,6 +274,7 @@ export function createQuestionChangeProposalHandlers(
       if (result.kind === "override-required") return json({ error: "private_override_required" }, 409);
       if (result.kind === "override-conflict") return json({ error: "private_version_conflict", override: result.current }, 409);
       if (result.kind === "active-conflict") return json({ error: "active_proposal_exists", proposal: result.current }, 409);
+      if (result.kind === "withdrawn-source") return json({ error: "proposal_withdrawn", proposal: result.value }, 409);
       return json({ proposal: result.value }, result.kind === "submitted" ? 201 : 200);
     },
 

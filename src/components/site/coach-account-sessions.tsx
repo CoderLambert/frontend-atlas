@@ -12,13 +12,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { copyCodeText } from "@/lib/copy-code.mjs";
+import { isConfirmedAccountLink, isSocialProvider, type SocialProvider } from "@/lib/account-link-state";
 import { getLegacyCoachConversationsSnapshot, type CoachConversation } from "@/lib/study-store";
 
 const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
   loading: () => <p className="coach-markdown-loading">正在准备回复排版…</p>,
 });
 
-type SocialProvider = "github" | "google";
 type SiteAccount = { id: string; name: string; email: string; authMethod: "mock" | "oauth" };
 type SiteAccountStatus = {
   authConfigured: boolean;
@@ -176,6 +176,35 @@ const requestHeaderName = "x-frontend-atlas-request";
 const requestHeaderValue = "1";
 const expectedAccountHeaderName = "x-frontend-atlas-account-id";
 const accountChangeChannelName = "frontend-atlas-site-account";
+const pendingAccountLinkKey = "frontend-atlas:pending-account-link:v1";
+
+function readPendingAccountLink() {
+  try {
+    const value: unknown = JSON.parse(window.sessionStorage.getItem(pendingAccountLinkKey) ?? "null");
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const record = value as Record<string, unknown>;
+    if (typeof record.accountId !== "string" || !isSocialProvider(record.provider)) return null;
+    return { accountId: record.accountId, provider: record.provider };
+  } catch {
+    return null;
+  }
+}
+
+function writePendingAccountLink(accountId: string, provider: SocialProvider) {
+  try {
+    window.sessionStorage.setItem(pendingAccountLinkKey, JSON.stringify({ accountId, provider }));
+  } catch {
+    // The server still enforces ownership; missing session storage only suppresses a success notice.
+  }
+}
+
+function clearPendingAccountLink() {
+  try {
+    window.sessionStorage.removeItem(pendingAccountLinkKey);
+  } catch {
+    // No persisted marker to clear.
+  }
+}
 
 class AccountApiError extends Error {
   status: number;
@@ -687,10 +716,23 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
       const currentUrl = new URL(window.location.href);
       const accountLinkResult = currentUrl.searchParams.get("accountLink");
       if (accountLinkResult) {
+        setNotice("");
         const accountLinkError = currentUrl.searchParams.get("error");
-        if (accountLinkResult === "success") setNotice("新的登录提供方已明确绑定到当前知序账号。");
+        const callbackProvider = currentUrl.searchParams.get("accountLinkProvider");
+        const pendingLink = readPendingAccountLink();
+        const confirmed = isConfirmedAccountLink({
+          result: accountLinkResult,
+          callbackProvider,
+          pending: pendingLink,
+          accountId: nextStatus.account?.id ?? null,
+          linkedProviders: nextStatus.linkedProviders,
+        });
+        if (confirmed) setNotice("新的登录提供方已明确绑定到当前知序账号。");
+        else if (accountLinkResult === "success") setError("服务器未确认这个登录提供方已绑定到当前知序账号。");
         else setError(accountLinkErrorMessage(accountLinkError));
+        clearPendingAccountLink();
         currentUrl.searchParams.delete("accountLink");
+        currentUrl.searchParams.delete("accountLinkProvider");
         currentUrl.searchParams.delete("error");
         currentUrl.searchParams.delete("error_description");
         window.history.replaceState(null, "", `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
@@ -789,16 +831,17 @@ export function CoachAccountSessions({ knownQids }: { knownQids: string[] }) {
     setNotice("");
     const controller = registerRequest();
     try {
-      const callbackURL = "/coach/sessions/?accountLink=success";
-      const errorCallbackURL = "/coach/sessions/?accountLink=failed";
       const response = await requestJson<{ url?: string; redirect?: boolean }>("/api/auth/link-social", {
         method: "POST",
-        body: { provider, callbackURL, errorCallbackURL, disableRedirect: true },
+        body: { provider },
         signal: controller.signal,
         accountId: targetAccount.id,
       });
       if (epoch !== epochRef.current || accountRef.current?.id !== targetAccount.id || controller.signal.aborted) return;
-      if (response.url) window.location.assign(response.url);
+      if (response.url) {
+        writePendingAccountLink(targetAccount.id, provider);
+        window.location.assign(response.url);
+      }
       else throw new Error("认证服务没有返回绑定授权地址。");
     } catch (cause) {
       reportError(cause, epoch);

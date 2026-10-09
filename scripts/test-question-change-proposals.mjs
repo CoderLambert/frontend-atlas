@@ -62,6 +62,7 @@ try {
   opened.db.insert(user).values([
     { id: "user-a", name: "A", email: "a@example.test", createdAt: now, updatedAt: now },
     { id: "user-b", name: "B", email: "b@example.test", createdAt: now, updatedAt: now },
+    { id: "user-c", name: "C", email: "c@example.test", createdAt: now, updatedAt: now },
   ]).run();
 
   const sessions = {
@@ -98,6 +99,18 @@ try {
   response = await privateHandlers.save(request("user-b", "PATCH", "Q1", overrideInput(null, null, "B 私人题干")), context("Q1"));
   assert.equal(response.status, 201);
   const sourceB = (await response.json()).override;
+  response = await privateHandlers.save(request("user-c", "PATCH", "Q1", overrideInput(null, null, "C 私人题干")), context("Q1"));
+  assert.equal(response.status, 201);
+  const sourceC = (await response.json()).override;
+
+  const concurrentResponses = await Promise.all([
+    proposalHandlers.submit(request("user-c", "POST", "Q1", submitInput(sourceC, "C 并发申请一")), context("Q1")),
+    proposalHandlers.submit(request("user-c", "POST", "Q1", submitInput(sourceC, "C 并发申请二")), context("Q1")),
+  ]);
+  assert.deepEqual(concurrentResponses.map((candidate) => candidate.status).sort(), [200, 201], "concurrent same-source API retries create one proposal");
+  const concurrentProposals = await Promise.all(concurrentResponses.map((candidate) => candidate.json()));
+  assert.equal(concurrentProposals[0].proposal.id, concurrentProposals[1].proposal.id);
+  assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_change_proposals WHERE owner_user_id = ?").get("user-c").n, 1);
 
   response = await proposalHandlers.submit(request("user-a", "POST", "Q1", { ...submitInput(sourceA), expectedVersion: 99 }), context("Q1"));
   assert.equal(response.status, 409);
@@ -140,6 +153,25 @@ try {
   assert.equal(response.status, 200);
   assert.equal((await response.json()).proposal.status, "withdrawn");
 
+  response = await proposalHandlers.submit(request("user-a", "POST", "Q1", submitInput(sourceA, "撤回后的延迟重放")), context("Q1"));
+  assert.equal(response.status, 409, "an exact replay cannot reactivate a withdrawn source snapshot");
+  const withdrawnReplay = await response.json();
+  assert.equal(withdrawnReplay.error, "proposal_withdrawn");
+  assert.equal(withdrawnReplay.proposal.id, proposalA.id, "the original audit row is returned rather than replaced");
+  assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_change_proposals WHERE owner_user_id = ? AND status = 'submitted'").get("user-a").n, 0);
+  assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_change_proposals WHERE owner_user_id = ?").get("user-a").n, 1);
+  assert.throws(() => opened.client.prepare(`
+    INSERT INTO question_change_proposals (
+      id, owner_user_id, qid, source_generation_id, source_override_version,
+      base_content_version, title, explanation_markdown, checkpoints_json,
+      summary, status, created_at, updated_at, withdrawn_at
+    )
+    SELECT 'forced-source-replay', owner_user_id, qid, source_generation_id, source_override_version,
+      base_content_version, title, explanation_markdown, checkpoints_json,
+      'forced replay', 'submitted', created_at, updated_at, NULL
+    FROM question_change_proposals WHERE id = ?
+  `).run(proposalA.id), /UNIQUE constraint failed: question_change_proposals\.owner_user_id.+source_override_version/u, "the database constraint closes concurrent bypasses across all statuses");
+
   response = await proposalHandlers.submit(request("user-a", "POST", "Q1", submitInput(sourceA2, "第二版重新提交")), context("Q1"));
   assert.equal(response.status, 201);
   const replacement = (await response.json()).proposal;
@@ -175,6 +207,14 @@ try {
     migrate(oldDb.db, { migrationsFolder: oldMigrations });
     oldDb.client.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)")
       .run("upgrade-user", "Upgrade", "upgrade@example.test", oldTimestamp, oldTimestamp);
+    oldDb.client.prepare("INSERT INTO account (id, account_id, provider_id, user_id, access_token, refresh_token, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("upgrade-account", "provider-account", "github", "upgrade-user", "fake-access-token", "fake-refresh-token", oldTimestamp, oldTimestamp);
+    oldDb.client.prepare("INSERT INTO session (id, expires_at, token, created_at, updated_at, ip_address, user_agent, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("upgrade-session", oldTimestamp + 86_400_000, "fake-session-token", oldTimestamp, oldTimestamp, "127.0.0.1", "migration-test", "upgrade-user");
+    oldDb.client.prepare("INSERT INTO coach_conversations (id, owner_user_id, title, qid, content_version, legacy_metadata_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("upgrade-conversation", "upgrade-user", "迁移前会话", "Q1", "old-base", '{"source":"migration-test"}', oldTimestamp, oldTimestamp);
+    oldDb.client.prepare("INSERT INTO coach_messages (id, conversation_id, owner_user_id, client_message_id, role, content, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("upgrade-message", "upgrade-conversation", "upgrade-user", "upgrade-client-message", "assistant", "迁移前回复", "complete", oldTimestamp);
     oldDb.client.prepare("INSERT INTO question_private_overrides (owner_user_id, qid, base_content_version, title, explanation_markdown, checkpoints_json, generation_id, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run("upgrade-user", "Q1", "old-base", "迁移前题干", "# 迁移前讲解", '["迁移前检查点"]', "old-generation", 4, oldTimestamp, oldTimestamp);
   } finally {
@@ -190,7 +230,24 @@ try {
       "0006 preserves existing private override data",
     );
     assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM question_change_proposals").get().n, 0);
-    assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 7);
+    assert.deepEqual(upgraded.client.prepare("SELECT id, name, email FROM user WHERE id = ?").get("upgrade-user"), {
+      id: "upgrade-user", name: "Upgrade", email: "upgrade@example.test",
+    });
+    assert.deepEqual(upgraded.client.prepare("SELECT id, account_id, provider_id, user_id, access_token, refresh_token FROM account WHERE id = ?").get("upgrade-account"), {
+      id: "upgrade-account", account_id: "provider-account", provider_id: "github", user_id: "upgrade-user",
+      access_token: "fake-access-token", refresh_token: "fake-refresh-token",
+    });
+    assert.deepEqual(upgraded.client.prepare("SELECT id, token, user_id, ip_address, user_agent FROM session WHERE id = ?").get("upgrade-session"), {
+      id: "upgrade-session", token: "fake-session-token", user_id: "upgrade-user", ip_address: "127.0.0.1", user_agent: "migration-test",
+    });
+    assert.deepEqual(upgraded.client.prepare("SELECT id, owner_user_id, title, qid, content_version, legacy_metadata_json FROM coach_conversations WHERE id = ?").get("upgrade-conversation"), {
+      id: "upgrade-conversation", owner_user_id: "upgrade-user", title: "迁移前会话", qid: "Q1", content_version: "old-base", legacy_metadata_json: '{"source":"migration-test"}',
+    });
+    assert.deepEqual(upgraded.client.prepare("SELECT id, conversation_id, owner_user_id, client_message_id, role, content, status FROM coach_messages WHERE id = ?").get("upgrade-message"), {
+      id: "upgrade-message", conversation_id: "upgrade-conversation", owner_user_id: "upgrade-user", client_message_id: "upgrade-client-message", role: "assistant", content: "迁移前回复", status: "complete",
+    });
+    assert.equal(upgraded.client.prepare("PRAGMA quick_check").pluck().get(), "ok");
+    assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 8);
   } finally {
     upgraded.client.close();
   }

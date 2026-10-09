@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `question_change_proposals_owner_qid_source_unique` ON `question_change_proposals` (`owner_user_id`,`qid`,`source_generation_id`,`source_override_version`);

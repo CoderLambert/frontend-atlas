@@ -34,6 +34,7 @@ function errorMessage(data: Record<string, unknown> | null, fallback: string) {
   if (data?.error === "version_conflict") return "另一个标签页已经更新这份私人版本。已载入较新版本，请核对后再保存。";
   if (data?.error === "private_version_conflict") return "私人版本已经变化，未提交旧快照。请核对当前版本后重新申请。";
   if (data?.error === "active_proposal_exists") return "已有一份待审核申请。请先撤回，再提交新的私人版本。";
+  if (data?.error === "proposal_withdrawn") return "这份私人版本的审核申请已撤回，不能重新激活。请先保存一个新的私人版本再申请。";
   return typeof data?.message === "string" ? data.message : fallback;
 }
 

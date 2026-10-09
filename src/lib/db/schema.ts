@@ -123,6 +123,8 @@ export const questionChangeProposals = sqliteTable("question_change_proposals", 
   uniqueIndex("question_change_proposals_owner_qid_active_unique")
     .on(table.ownerUserId, table.qid)
     .where(sql`${table.status} = 'submitted'`),
+  uniqueIndex("question_change_proposals_owner_qid_source_unique")
+    .on(table.ownerUserId, table.qid, table.sourceGenerationId, table.sourceOverrideVersion),
   check("question_change_proposals_status_check", sql`${table.status} in ('submitted', 'withdrawn')`),
 ]);
 

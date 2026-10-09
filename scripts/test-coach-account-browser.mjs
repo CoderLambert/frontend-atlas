@@ -338,6 +338,7 @@ try {
     window.__linkProviderCalls = 0;
     window.__linkProviderExpectedAccount = null;
     window.__linkProviderBody = null;
+    window.__linkedProviders = ['github'];
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
       const method = init.method ?? 'GET';
@@ -347,7 +348,7 @@ try {
         if (data.account && window.__legacyFakeOAuth) {
           data.account = { ...data.account, id: window.__legacyFakeAccountId, authMethod: 'oauth', email: window.__legacyFakeAccountId === 'mock-user-a' ? 'preview-a@example.test' : 'preview-b@example.test' };
           data.providers = { github: true, google: true };
-          data.linkedProviders = ['github'];
+          data.linkedProviders = window.__linkedProviders;
         }
         return new Response(JSON.stringify(data), { status: response.status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
       }
@@ -367,15 +368,19 @@ try {
   await browser.evaluate("document.querySelector('[data-testid=refresh-session-list]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=legacy-import-preview-button]') !== null")), "the OAuth-only import panel for local-preview testing");
   assert.equal(await browser.evaluate("document.querySelector('[data-testid=linked-provider-github]') !== null"), true, "the current account shows its linked provider without exposing tokens");
+  await browser.evaluate(`history.replaceState(null, '', '/coach/sessions/?accountLink=success&accountLinkProvider=google'); document.querySelector('[data-testid=refresh-session-list]').click()`);
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('服务器未确认这个登录提供方已绑定到当前知序账号')")), "a forged OAuth success query is rejected");
+  assert.equal(await browser.evaluate("new URL(location.href).searchParams.has('accountLink')"), false, "the one-time callback query is removed after validation");
   await browser.evaluate("document.querySelector('[data-testid=link-provider-google]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("window.__linkProviderCalls === 1 && document.body.innerText.includes('没有返回绑定授权地址')")), "explicit second-provider link request");
   assert.equal(await browser.evaluate("window.__linkProviderExpectedAccount"), "mock-user-a", "the provider-link request is bound to the displayed account id");
-  assert.deepEqual(await browser.evaluate("window.__linkProviderBody"), {
-    provider: "google",
-    callbackURL: "/coach/sessions/?accountLink=success",
-    errorCallbackURL: "/coach/sessions/?accountLink=failed",
-    disableRedirect: true,
-  }, "the provider-link request uses fixed same-origin callbacks and no client token or account id");
+  assert.deepEqual(await browser.evaluate("window.__linkProviderBody"), { provider: "google" }, "the browser submits only the requested provider; callbacks are server-owned");
+  await browser.evaluate(`sessionStorage.setItem('frontend-atlas:pending-account-link:v1', JSON.stringify({ accountId: 'mock-user-a', provider: 'google' })); history.replaceState(null, '', '/coach/sessions/?accountLink=failed&accountLinkProvider=google&error=access_denied'); document.querySelector('[data-testid=refresh-session-list]').click()`);
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('提供方授权已取消')")), "a cancelled OAuth link callback stays failed");
+  assert.deepEqual(await browser.evaluate("window.__linkedProviders"), ["github"], "a failed callback does not mutate provider ownership");
+  await browser.evaluate(`window.__linkedProviders = ['github', 'google']; sessionStorage.setItem('frontend-atlas:pending-account-link:v1', JSON.stringify({ accountId: 'mock-user-a', provider: 'google' })); history.replaceState(null, '', '/coach/sessions/?accountLink=success&accountLinkProvider=google'); document.querySelector('[data-testid=refresh-session-list]').click()`);
+  await waitFor(() => browser.evaluate(shellReadyExpression("document.body.innerText.includes('新的登录提供方已明确绑定')")), "a pending link is confirmed against the server provider list");
+  assert.equal(await browser.evaluate("document.querySelector('[data-testid=linked-provider-google]') !== null"), true, "the confirmed provider appears in the server-backed provider list");
   await browser.evaluate("document.querySelector('[data-testid=legacy-import-preview-button]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=legacy-import-preview]')?.innerText.includes('UNLISTED-QID-EXACT')")), "a local-only preview of the old conversation");
   const localPreviewText = await browser.evaluate("document.querySelector('[data-testid=legacy-import-preview]').innerText");
