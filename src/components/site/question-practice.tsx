@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BookOpen, CheckCircle2, Clock3, Eye, FileQuestion, RotateCcw, Save, WandSparkles } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
@@ -14,8 +14,10 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { CodeBlock } from "@/components/ui/code-block";
+import { QuestionPrivateEditor, type QuestionPrivateSelection } from "@/components/site/question-private-editor";
 import { checkpointsFor, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
-import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type SelfRating } from "@/lib/study-store";
+import { contentBlocksToMarkdown } from "@/lib/question-private-overrides";
+import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type Draft, type SelfRating } from "@/lib/study-store";
 
 type PracticeQuestion = MasterQuestion | CompanyQuestion;
 type SaveState = "loading" | "ready" | "saving" | "saved" | "error";
@@ -35,9 +37,9 @@ function newId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-function newAttempt(qid: string, contentVersion: string, answer = ""): Attempt {
+function newAttempt(qid: string, contentVersion: string, answer = "", ownerUserId?: string): Attempt {
   const now = new Date().toISOString();
-  return { attemptId: newId(), qid, contentVersion, startedAt: now, originalAnswer: answer, revisions: [], revealedAt: null, skipped: false, assessments: [], updatedAt: now };
+  return { attemptId: newId(), qid, contentVersion, ...(ownerUserId ? { ownerUserId } : {}), startedAt: now, originalAnswer: answer, revisions: [], revealedAt: null, skipped: false, assessments: [], updatedAt: now };
 }
 
 function localDatePlus(days: number) {
@@ -108,22 +110,45 @@ export function QuestionPractice({
   const [assessmentError, setAssessmentError] = useState("");
   const [assessedMessage, setAssessedMessage] = useState("");
   const [storedSnapshot, setStoredSnapshot] = useState(false);
+  const [privateSelection, setPrivateSelection] = useState<QuestionPrivateSelection>(null);
+  const [loadedStudyKey, setLoadedStudyKey] = useState<string | null>(null);
+  const studyEpoch = useRef(0);
+  const pendingAnswerRef = useRef<Attempt | null>(null);
+  const pendingRevisionRef = useRef<Draft | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const answerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const previousAnswerViewMode = useRef<AnswerViewMode>("edit");
   const previousPreviewQuestionId = useRef(question.qid);
-  const checkpoints = checkpointsFor(question);
+  const publicCheckpoints = checkpointsFor(question);
+  const publicExplanationMarkdown = contentBlocksToMarkdown(question.content);
+  const privateOverride = privateSelection?.override ?? null;
+  const checkpoints = privateOverride
+    ? privateOverride.checkpoints.map((text, index) => ({ id: `${question.qid}-private-${index + 1}`, label: text, text }))
+    : publicCheckpoints;
+  const effectiveContentVersion = privateSelection && privateOverride
+    ? `${contentVersion}:private:${encodeURIComponent(privateSelection.ownerUserId)}:${privateOverride.generationId}:${privateOverride.version}`
+    : contentVersion;
+  const effectiveTitle = privateOverride?.title ?? question.title;
+  const localMode = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
+  const accountReady = !localMode || privateSelection !== null;
+  const studyOwnerId = localMode ? privateSelection?.ownerUserId || "" : "";
+  const studyKey = [question.qid, effectiveContentVersion, studyOwnerId || "device"].join("|");
+  const studyReady = accountReady && loadedStudyKey === studyKey;
   const isMaster = "topic_id" in question;
   const sourceLabel = isMaster ? question.primary : question.company;
   const relatedActiveAssessment = currentAssessment(attempt);
-  const hasContentUpdate = Boolean(attempt && attempt.contentVersion !== contentVersion);
+  const hasContentUpdate = Boolean(attempt && attempt.contentVersion !== effectiveContentVersion);
   const hasAnswer = answer.trim().length > 0;
   const answerViewMode = answerViewSelection.qid === question.qid ? answerViewSelection.mode : "edit";
 
   function setAnswerViewMode(mode: AnswerViewMode) {
     setAnswerViewSelection({ qid: question.qid, mode });
   }
+
+  const handlePrivateSelectionChange = useCallback((selection: QuestionPrivateSelection) => {
+    setPrivateSelection(selection);
+  }, []);
 
   useEffect(() => {
     const questionChanged = previousPreviewQuestionId.current !== question.qid;
@@ -136,15 +161,35 @@ export function QuestionPractice({
 
   useEffect(() => {
     let active = true;
+    const epoch = ++studyEpoch.current;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (revisionTimer.current) clearTimeout(revisionTimer.current);
+    saveTimer.current = null;
+    revisionTimer.current = null;
     Promise.resolve().then(() => {
-      if (active) setSaveState("loading");
-      return getStudySnapshot();
+      if (active && studyEpoch.current === epoch) {
+        setLoadedStudyKey(null);
+        setAttempt(null);
+        setAnswer("");
+        setRevision("");
+        setRevealed(false);
+        setStoredSnapshot(false);
+        setSaveState("loading");
+        setSaveError("");
+        setScores({});
+        setMissingNote("");
+        setReviewOption("none");
+        setCustomReviewDate("");
+        setAssessmentError("");
+        setAssessedMessage("");
+      }
+      return accountReady ? getStudySnapshot() : null;
     }).then((snapshot) => {
-      if (!active) return;
+      if (!active || studyEpoch.current !== epoch || !snapshot) return;
       const latest = snapshot.attempts
-        .filter((item) => item.qid === question.qid)
+        .filter((item) => item.qid === question.qid && (studyOwnerId ? item.ownerUserId === studyOwnerId : !item.ownerUserId))
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null;
-      const draft = latest ? snapshot.drafts.find((item) => item.qid === question.qid && item.attemptId === latest.attemptId) : null;
+      const draft = latest ? snapshot.drafts.find((item) => item.qid === question.qid && item.attemptId === latest.attemptId && (studyOwnerId ? item.ownerUserId === studyOwnerId : !item.ownerUserId)) : null;
       if (latest) {
         setStoredSnapshot(true);
         setAttempt(latest);
@@ -152,7 +197,7 @@ export function QuestionPractice({
         setAnswer(latest.originalAnswer);
         if (draft?.kind === "revision") setRevision(draft.text);
         const assessment = [...latest.assessments].reverse().find((item) => !item.revokedAt) ?? null;
-        if (assessment && latest.contentVersion === contentVersion) {
+        if (assessment && latest.contentVersion === effectiveContentVersion) {
           setScores(assessment.scores);
           setMissingNote(assessment.missingNote);
           if (assessment.nextReviewOn) {
@@ -166,26 +211,44 @@ export function QuestionPractice({
         setSaveState("ready");
       }
       if (latest) setSaveState("saved");
+      setLoadedStudyKey(studyKey);
     }).catch((error: unknown) => {
-      if (!active) return;
+      if (!active || studyEpoch.current !== epoch) return;
       setSaveState("error");
       setSaveError(error instanceof Error ? error.message : "本设备保存不可用。");
+      setLoadedStudyKey(studyKey);
     });
     return () => {
       active = false;
+      studyEpoch.current += 1;
+    // Flush under the captured owner before switching pages/accounts; do not show stale completion.
+    const pendingAnswer = pendingAnswerRef.current;
+    const pendingRevision = pendingRevisionRef.current;
+    pendingAnswerRef.current = null;
+    pendingRevisionRef.current = null;
+    if (pendingAnswer) void saveAttempt(pendingAnswer).catch(() => {});
+    if (pendingRevision) void saveDraft(pendingRevision).catch(() => {});
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (revisionTimer.current) clearTimeout(revisionTimer.current);
+      saveTimer.current = null;
+      revisionTimer.current = null;
     };
-  }, [question.qid, contentVersion]);
+  }, [question.qid, effectiveContentVersion, accountReady, studyOwnerId, studyKey]);
 
   async function persistAttempt(next: Attempt): Promise<boolean> {
+    const epoch = studyEpoch.current;
+    if (!studyReady) return false;
     setAttempt(next);
     setSaveState("saving");
     setSaveError("");
     try {
       await saveAttempt(next);
+      if (studyEpoch.current !== epoch) return false;
       setSaveState("saved");
       setStoredSnapshot(true);
       return true;
     } catch (error) {
+      if (studyEpoch.current !== epoch) return false;
       setSaveState("error");
       setSaveError(error instanceof Error ? error.message : "本设备保存失败。");
       return false;
@@ -195,17 +258,23 @@ export function QuestionPractice({
   function handleAnswerChange(value: string) {
     setAnswer(value);
     if (revealed) return;
-    const base = attempt && attempt.contentVersion === contentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, contentVersion);
+    const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion, "", studyOwnerId);
     const next = { ...base, originalAnswer: value, skipped: false, updatedAt: new Date().toISOString() };
     setAttempt(next);
     setSaveState("saving");
     setSaveError("");
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => { void persistAttempt(next); }, 450);
+    pendingAnswerRef.current = next;
+    saveTimer.current = setTimeout(() => {
+      pendingAnswerRef.current = null;
+      void persistAttempt(next);
+    }, 450);
   }
 
   async function handleReveal(skip: boolean) {
-    const base = attempt && attempt.contentVersion === contentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, contentVersion, answer);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    pendingAnswerRef.current = null;
+    const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion, answer, studyOwnerId);
     const now = new Date().toISOString();
     const next = { ...base, originalAnswer: answer, skipped: skip, revealedAt: now, updatedAt: now };
     setRevealed(true);
@@ -214,7 +283,11 @@ export function QuestionPractice({
   }
 
   function handleNewAttempt() {
-    const next = newAttempt(question.qid, contentVersion);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    const pending = pendingAnswerRef.current;
+    pendingAnswerRef.current = null;
+    if (pending) void saveAttempt(pending).catch(() => {});
+    const next = newAttempt(question.qid, effectiveContentVersion, "", studyOwnerId);
     setAttempt(next);
     setAnswer("");
     setRevision("");
@@ -232,10 +305,16 @@ export function QuestionPractice({
     setRevision(value);
     if (!attempt) return;
     if (revisionTimer.current) clearTimeout(revisionTimer.current);
-    const draft = { qid: question.qid, attemptId: attempt.attemptId, contentVersion: attempt.contentVersion, kind: "revision" as const, text: value, savedAt: new Date().toISOString() };
+    const draft: Draft = { qid: question.qid, ...(studyOwnerId ? { ownerUserId: studyOwnerId } : {}), attemptId: attempt.attemptId, contentVersion: attempt.contentVersion, kind: "revision", text: value, savedAt: new Date().toISOString() };
     setSaveState("saving");
+    pendingRevisionRef.current = draft;
     revisionTimer.current = setTimeout(() => {
-      saveDraft(draft).then(() => setSaveState("saved")).catch((error: unknown) => {
+      pendingRevisionRef.current = null;
+      const epoch = studyEpoch.current;
+      saveDraft(draft).then(() => {
+        if (studyEpoch.current === epoch) setSaveState("saved");
+      }).catch((error: unknown) => {
+        if (studyEpoch.current !== epoch) return;
         setSaveState("error");
         setSaveError(error instanceof Error ? error.message : "补充草稿保存失败。");
       });
@@ -243,7 +322,10 @@ export function QuestionPractice({
   }
 
   async function saveRevision() {
-    if (!attempt || !revision.trim()) return;
+    if (!attempt || !revision.trim() || !studyReady) return;
+    if (revisionTimer.current) clearTimeout(revisionTimer.current);
+    pendingRevisionRef.current = null;
+    const epoch = studyEpoch.current;
     const now = new Date().toISOString();
     const next: Attempt = {
       ...attempt,
@@ -255,11 +337,14 @@ export function QuestionPractice({
     setSaveError("");
     try {
       await saveAttempt(next);
-      await deleteDraft(question.qid);
+      if (studyEpoch.current !== epoch) return;
+      await deleteDraft(question.qid, studyOwnerId || undefined);
+      if (studyEpoch.current !== epoch) return;
       setSaveState("saved");
       setRevision("");
       setAssessedMessage("补充修订已保存，原始盲答仍保留。");
     } catch (error) {
+      if (studyEpoch.current !== epoch) return;
       setSaveState("error");
       setSaveError(error instanceof Error ? error.message : "补充修订未能保存。");
     }
@@ -327,17 +412,20 @@ export function QuestionPractice({
       <div className="question-breadcrumb"><Link href="/questions/">题库</Link><span aria-hidden="true">/</span><span>{question.qid}</span><span aria-hidden="true">/</span><Link href={"/knowledge/" + topicId + "/"}>{topicTitle}</Link></div>
       <header className="question-heading">
         <div className="eyebrow">PRACTICE · 先作答，再对照</div>
-        <h1>{question.title}</h1>
+        <h1>{effectiveTitle}</h1>
         <div className="question-tags">
           <Badge variant="outline">{question.qid}</Badge>
           <Badge variant="secondary">{sourceLabel}</Badge>
           <Badge variant="subtle">{topicId} · {topicTitle}</Badge>
+          {privateOverride && <Badge variant="secondary">我的私人版本 v{privateOverride.version}</Badge>}
           {isMaster && question.original_metadata?.includes("P0") && <Badge variant="outline">P0 · 优先练习</Badge>}
         </div>
       </header>
 
       <div className="question-grid">
         <div className="question-main-column">
+          {!studyReady ? <Card className="answer-card"><p role="status">正在确认账号并读取本设备记录…</p></Card> : (
+            <>
           {hasContentUpdate && <div className="content-version-warning" role="status">资料内容已更新。本次记录仍按 {attempt?.contentVersion} 保存；旧自评不会套用到新检查点。</div>}
           <Card className="answer-card">
             <div className="answer-card-header">
@@ -413,9 +501,9 @@ export function QuestionPractice({
               <Card className="reference-card">
                 <div className="answer-card-header">
                   <div><h2>口述提纲</h2><p>从这道题自己的参考要点出发，用自己的话组织回答。</p></div>
-                  <Badge variant="secondary">{attempt?.contentVersion}</Badge>
+                  <Badge variant="secondary">{privateOverride ? `私人版本 v${privateOverride.version}` : attempt?.contentVersion}</Badge>
                 </div>
-                {question.qid === "D13" ? (
+                {question.qid === "D13" && !privateOverride ? (
                   <p className="oral-outline">同步逐项遍历有限 iterable，每取到一项立即用 Promise.resolve 注册处理器，按输入索引保存结果。计数哨兵处理空输入；任一拒绝使聚合拒绝，但不会取消其他工作。迭代中途抛错也要转成拒绝，并避免先展开再注册导致早先拒绝无人处理。它只组合结果，限制启动并发是 D02 的职责。</p>
                 ) : (
                   <ol className="oral-outline-list">{checkpoints.slice(0, 3).map((checkpoint) => <li key={checkpoint.id}>{checkpoint.label}</li>)}</ol>
@@ -424,8 +512,10 @@ export function QuestionPractice({
                   <AccordionItem value="answer">
                     <AccordionTrigger>展开完整参考答案、代码、边界与来源</AccordionTrigger>
                     <AccordionContent>
-                      <RichAnswer blocks={question.content} />
-                      {question.source.filename && <p className="source-note">来源：{question.source.filename}{question.source.version ? " · 版本 " + question.source.version : ""}{question.source.bookmark ? " · " + question.source.bookmark : ""}</p>}
+                      {privateOverride
+                        ? <CoachMarkdown source={privateOverride.explanationMarkdown} streaming={false} />
+                        : <RichAnswer blocks={question.content} />}
+                      {question.source.filename && <p className="source-note">{privateOverride ? "公共底稿来源：" : "来源："}{question.source.filename}{question.source.version ? " · 版本 " + question.source.version : ""}{question.source.bookmark ? " · " + question.source.bookmark : ""}</p>}
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -500,9 +590,19 @@ export function QuestionPractice({
               {attempt?.revisions.length ? <Card className="revision-history"><h2>补充修订历史</h2>{attempt.revisions.map((item) => <details key={item.revisionId}><summary>{new Date(item.savedAt).toLocaleString()}</summary>{typeof item.text === "string" && item.text.trim() ? <CoachMarkdown source={item.text} streaming={false} /> : <p className="revision-empty">（这条补充修订为空）</p>}</details>)}</Card> : null}
             </>
           )}
+            </>
+          )}
         </div>
 
         <aside className="question-aside" aria-label="题目关联信息">
+          {localMode && <QuestionPrivateEditor
+            qid={question.qid}
+            contentVersion={contentVersion}
+            publicTitle={question.title}
+            publicExplanationMarkdown={publicExplanationMarkdown}
+            publicCheckpoints={publicCheckpoints.map((checkpoint) => checkpoint.text)}
+            onSelectionChange={handlePrivateSelectionChange}
+          />}
           <Card className="related-card">
             <div className="card-heading"><BookOpen size={18} aria-hidden="true" /><span>关联知识</span></div>
             <Link className="related-topic" href={"/knowledge/" + topicId + "/"}><span>{topicTitle}</span><small>{topicId} · {sourceLabel}</small></Link>
@@ -517,13 +617,13 @@ export function QuestionPractice({
               <WandSparkles size={15} aria-hidden="true" />
             </Link>
           </Card>
-          <Card className="session-card">
+          {studyReady && <Card className="session-card">
             <div className="card-heading"><FileQuestion size={18} aria-hidden="true" /><span>本题记录</span></div>
             <p>{attempt?.skipped ? "已标记为跳过作答" : relatedActiveAssessment ? "已保存个人自评" : revealed ? "已查看参考答案" : attempt ? "作答中" : "尚未开始"}</p>
-            <small>内容版本 {attempt?.contentVersion ?? contentVersion}</small>
+            <small>内容版本 {attempt?.contentVersion ?? effectiveContentVersion}</small>
             {relatedActiveAssessment?.nextReviewOn && <small><Clock3 size={13} aria-hidden="true" /> {dueLabel}</small>}
             {storedSnapshot && <small>数据只保存在这个浏览器中。</small>}
-          </Card>
+          </Card>}
           <Card className="session-card">
             <div className="card-heading"><BookOpen size={18} aria-hidden="true" /><span>相关题目</span></div>
             <ul className="related-question-list">{relatedQuestionIds.slice(0, 5).map((id) => <li key={id}><Link href={"/questions/" + id + "/"}>{id}</Link></li>)}</ul>

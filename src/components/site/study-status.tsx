@@ -1,10 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, Clock3, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getStudySnapshot, type Attempt, type StudySnapshot } from "@/lib/study-store";
+import { getVisibleStudySnapshot, subscribeToStudyAccountChanges, type Attempt, type StudySnapshot } from "@/lib/study-store";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -25,14 +25,23 @@ export function StudyStatusContent({ kind, contentVersion }: { kind: "progress" 
   const [state, setState] = useState<LoadState>("loading");
   const [snapshot, setSnapshot] = useState<StudySnapshot | null>(null);
   const [attemptNo, setAttemptNo] = useState(0);
+  const accountEpochRef = useRef(0);
+
+  useEffect(() => subscribeToStudyAccountChanges(() => {
+    accountEpochRef.current += 1;
+    setSnapshot(null);
+    setState("loading");
+    setAttemptNo((value) => value + 1);
+  }), []);
 
   useEffect(() => {
     let active = true;
-    getStudySnapshot().then((value) => {
-      if (!active) return;
+    const epoch = accountEpochRef.current;
+    getVisibleStudySnapshot().then((value) => {
+      if (!active || epoch !== accountEpochRef.current) return;
       setSnapshot(value);
       setState("ready");
-    }).catch(() => { if (active) setState("error"); });
+    }).catch(() => { if (active && epoch === accountEpochRef.current) setState("error"); });
     return () => { active = false; };
   }, [attemptNo]);
 

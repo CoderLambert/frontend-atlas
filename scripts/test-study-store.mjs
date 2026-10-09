@@ -149,14 +149,33 @@ for (const [name, keyPath, record] of [
 indexedDB.seed(prior);
 globalThis.window = { indexedDB };
 
-const { backupFromSnapshot, clearAllStudyData, getStudySnapshot, mergeStudyData, replaceAllStudyData, saveCoachConversation } = await import("../src/lib/study-store.ts");
+const { backupFromSnapshot, clearAllStudyData, deleteDraft, filterStudySnapshotForAccount, getStudySnapshot, mergeStudyData, replaceAllStudyData, saveAttempt, saveCoachConversation, saveDraft } = await import("../src/lib/study-store.ts");
 const migrated = await getStudySnapshot();
-assert.equal(prior.version, 2, "the existing study database upgrades in place");
-assert.deepEqual([...prior.stores.keys()], ["attempts", "drafts", "preferences", "coachConversations"], "upgrade adds only the conversation store");
+assert.equal(prior.version, 3, "the existing study database upgrades in place");
+assert.deepEqual([...prior.stores.keys()], ["attempts", "drafts", "preferences", "accountDrafts", "coachConversations"], "upgrade adds account drafts without changing legacy store keys");
 assert.deepEqual(migrated.attempts, [attempt], "existing attempts survive the upgrade");
 assert.deepEqual(migrated.drafts, [draft], "existing drafts survive the upgrade");
 assert.deepEqual(migrated.preferences, [preference], "existing preferences survive the upgrade");
 assert.deepEqual(migrated.coachConversations, []);
+
+const ownerA = { ...attempt, attemptId: "account-attempt-a", ownerUserId: "user-a", updatedAt: "2026-10-08T00:00:01.000Z" };
+const ownerB = { ...attempt, attemptId: "account-attempt-b", ownerUserId: "user-b", originalAnswer: "B answer", updatedAt: "2026-10-08T00:00:02.000Z" };
+await saveAttempt(ownerA);
+await saveAttempt(ownerB);
+await saveDraft({ ...draft, ownerUserId: "user-a", attemptId: ownerA.attemptId, text: "private draft A" });
+await saveDraft({ ...draft, ownerUserId: "user-b", attemptId: ownerB.attemptId, text: "private draft B" });
+let profiles = await getStudySnapshot();
+assert.deepEqual(filterStudySnapshotForAccount(profiles, "user-a").attempts, [ownerA]);
+assert.deepEqual(filterStudySnapshotForAccount(profiles, "user-b").attempts, [ownerB]);
+assert.deepEqual(filterStudySnapshotForAccount(profiles, null).attempts, [attempt], "legacy records stay unclaimed");
+assert.equal(filterStudySnapshotForAccount(profiles, "user-a").drafts[0].text, "private draft A");
+assert.equal(filterStudySnapshotForAccount(profiles, "user-b").drafts[0].text, "private draft B");
+assert.deepEqual(filterStudySnapshotForAccount(profiles, null).drafts, [draft], "legacy drafts remain");
+await deleteDraft("D13", "user-a");
+profiles = await getStudySnapshot();
+assert.equal(filterStudySnapshotForAccount(profiles, "user-a").drafts.length, 0, "deleting A draft does not delete B");
+assert.equal(filterStudySnapshotForAccount(profiles, "user-b").drafts[0].text, "private draft B");
+assert.deepEqual(filterStudySnapshotForAccount(profiles, null).drafts, [draft]);
 
 const timestamp = "2026-10-08T00:00:00.000Z";
 const pending = {
@@ -186,7 +205,8 @@ assert.equal((await getStudySnapshot()).coachConversations.length, 2, "merge imp
 const replacement = { ...backupFromSnapshot(persisted, "synthetic-v1"), coachConversations: [mergedConversation] };
 await replaceAllStudyData(replacement);
 assert.deepEqual((await getStudySnapshot()).coachConversations, [mergedConversation], "replacement includes the conversation store");
+assert.equal(filterStudySnapshotForAccount(await getStudySnapshot(), "user-b").drafts[0].text, "private draft B", "replacement restores account drafts");
 await clearAllStudyData();
 assert.deepEqual(await getStudySnapshot(), { attempts: [], drafts: [], preferences: [], coachConversations: [] }, "clear removes all local stores");
 
-console.log("study store: synthetic v1 migration, conversation persistence, merge, replacement, and clear passed");
+console.log("study store: v1-to-v3 additive migration, A/B scoped drafts, conversation persistence, merge, replacement, and clear passed");
