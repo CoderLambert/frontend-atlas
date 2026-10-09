@@ -265,6 +265,7 @@ try {
   const previousServiceToken = process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN;
   let upstreamAssistantCalls = 0;
   let internalPipelineCalls = 0;
+  const upstreamMessageBatches = [];
   try {
     process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN = "service-token-for-tests-only-000000000000";
     globalThis.fetch = async (input, init = {}) => {
@@ -284,9 +285,13 @@ try {
       if (url.endsWith("/api/assistant/chat")) {
         upstreamAssistantCalls += 1;
         const payload = JSON.parse(init.body);
+        upstreamMessageBatches.push(payload.messages);
         assert.equal(payload.model, "model-a");
-        assert.equal(payload.messages.at(-1).content, "persist this real pipeline reply");
-        return new Response('event: delta\ndata: "SQLite real pipeline reply"\n\nevent: done\ndata: {"completed":true}\n\n', {
+        const latestContent = payload.messages.at(-1).content;
+        const reply = latestContent === "follow up with saved context"
+          ? "Second SQLite reply"
+          : "SQLite real pipeline reply";
+        return new Response(`event: delta\ndata: ${JSON.stringify(reply)}\n\nevent: done\ndata: {"completed":true}\n\n`, {
           headers: { "content-type": "text/event-stream" },
         });
       }
@@ -326,6 +331,34 @@ try {
     assert.equal((await duplicatePipeline.json()).duplicate, true);
     assert.equal(upstreamAssistantCalls, 1, "an idempotent duplicate does not invoke the upstream assistant twice");
 
+    const followUpPayload = { clientRunId: "real-pipeline-follow-up", content: "follow up with saved context" };
+    const followUpResponse = await pipelineHandlers.create(
+      request("user-a", "POST", followUpPayload),
+      { params: Promise.resolve({ conversationId: pipelineConversation.conversation.id }) },
+    );
+    assert.equal(followUpResponse.status, 200);
+    assert.match(await followUpResponse.text(), /"status":"complete"/u);
+    assert.equal(upstreamAssistantCalls, 2, "a distinct follow-up starts exactly one new provider request");
+    assert.deepEqual(upstreamMessageBatches[1], [
+      { role: "user", content: "persist this real pipeline reply" },
+      { role: "assistant", content: "SQLite real pipeline reply" },
+      { role: "user", content: "follow up with saved context" },
+    ], "a follow-up receives the saved user/assistant context in order");
+    const persistedMultiTurn = conversations.find("user-a", pipelineConversation.conversation.id);
+    assert.deepEqual(
+      persistedMultiTurn.messages.map((message) => [message.role, message.content, message.status]),
+      [
+        ["user", "persist this real pipeline reply", "complete"],
+        ["assistant", "SQLite real pipeline reply", "complete"],
+        ["user", "follow up with saved context", "complete"],
+        ["assistant", "Second SQLite reply", "complete"],
+      ],
+      "both turns persist in one SQLite conversation",
+    );
+    const restartedConversations = new ConversationService(new ConversationRepository(opened.db));
+    assert.equal(restartedConversations.find("user-a", pipelineConversation.conversation.id).messages.length, 4, "multi-turn history reloads after a fresh service instance");
+    assert.equal(restartedConversations.find("user-b", pipelineConversation.conversation.id), null, "another owner cannot read the multi-turn conversation");
+
     const callsBeforeGuess = internalPipelineCalls;
     const guessedPipeline = await pipelineHandlers.create(
       request("user-b", "POST", { clientRunId: "guessed-pipeline-run", content: "must not call upstream", profileId: "oaiapp_profile_a" }),
@@ -340,7 +373,7 @@ try {
     else process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN = previousServiceToken;
   }
 
-  process.stdout.write("provider connection: controlled mapping and resume, DTO minimization, owner isolation, guessed-id zero-call rejection, real provider-to-SQLite persistence/idempotency, model versioning, streaming unbind/tail preservation, stale binding rejection, service token forwarding, and abnormal EOF passed\n");
+  process.stdout.write("provider connection: controlled mapping and resume, DTO minimization, owner isolation, guessed-id zero-call rejection, real provider-to-SQLite persistence/idempotency/multi-turn recovery, model versioning, streaming unbind/tail preservation, stale binding rejection, service token forwarding, and abnormal EOF passed\n");
 } finally {
   opened?.client.close();
   rmSync(tempRoot, { recursive: true, force: true });
