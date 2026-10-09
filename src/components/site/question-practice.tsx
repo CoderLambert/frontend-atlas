@@ -37,9 +37,9 @@ function newId() {
   return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
 }
 
-function newAttempt(qid: string, contentVersion: string, answer = ""): Attempt {
+function newAttempt(qid: string, contentVersion: string, answer = "", ownerUserId?: string): Attempt {
   const now = new Date().toISOString();
-  return { attemptId: newId(), qid, contentVersion, startedAt: now, originalAnswer: answer, revisions: [], revealedAt: null, skipped: false, assessments: [], updatedAt: now };
+  return { attemptId: newId(), qid, contentVersion, ...(ownerUserId ? { ownerUserId } : {}), startedAt: now, originalAnswer: answer, revisions: [], revealedAt: null, skipped: false, assessments: [], updatedAt: now };
 }
 
 function localDatePlus(days: number) {
@@ -111,6 +111,8 @@ export function QuestionPractice({
   const [assessedMessage, setAssessedMessage] = useState("");
   const [storedSnapshot, setStoredSnapshot] = useState(false);
   const [privateSelection, setPrivateSelection] = useState<QuestionPrivateSelection>(null);
+  const [loadedStudyKey, setLoadedStudyKey] = useState<string | null>(null);
+  const studyEpoch = useRef(0);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const answerTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -126,6 +128,11 @@ export function QuestionPractice({
     ? `${contentVersion}:private:${encodeURIComponent(privateSelection.ownerUserId)}:${privateOverride.generationId}:${privateOverride.version}`
     : contentVersion;
   const effectiveTitle = privateOverride?.title ?? question.title;
+  const localMode = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
+  const accountReady = !localMode || privateSelection !== null;
+  const studyOwnerId = localMode ? privateSelection?.ownerUserId || "" : "";
+  const studyKey = [question.qid, effectiveContentVersion, studyOwnerId || "device"].join("|");
+  const studyReady = accountReady && loadedStudyKey === studyKey;
   const isMaster = "topic_id" in question;
   const sourceLabel = isMaster ? question.primary : question.company;
   const relatedActiveAssessment = currentAssessment(attempt);
@@ -152,9 +159,21 @@ export function QuestionPractice({
 
   useEffect(() => {
     let active = true;
+    const epoch = ++studyEpoch.current;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    if (revisionTimer.current) clearTimeout(revisionTimer.current);
+    saveTimer.current = null;
+    revisionTimer.current = null;
     Promise.resolve().then(() => {
-      if (active) {
+      if (active && studyEpoch.current === epoch) {
+        setLoadedStudyKey(null);
+        setAttempt(null);
+        setAnswer("");
+        setRevision("");
+        setRevealed(false);
+        setStoredSnapshot(false);
         setSaveState("loading");
+        setSaveError("");
         setScores({});
         setMissingNote("");
         setReviewOption("none");
@@ -162,11 +181,11 @@ export function QuestionPractice({
         setAssessmentError("");
         setAssessedMessage("");
       }
-      return getStudySnapshot();
+      return accountReady ? getStudySnapshot() : null;
     }).then((snapshot) => {
-      if (!active) return;
+      if (!active || studyEpoch.current !== epoch || !snapshot) return;
       const latest = snapshot.attempts
-        .filter((item) => item.qid === question.qid)
+        .filter((item) => item.qid === question.qid && (studyOwnerId ? item.ownerUserId === studyOwnerId : !item.ownerUserId))
         .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null;
       const draft = latest ? snapshot.drafts.find((item) => item.qid === question.qid && item.attemptId === latest.attemptId) : null;
       if (latest) {
@@ -190,15 +209,22 @@ export function QuestionPractice({
         setSaveState("ready");
       }
       if (latest) setSaveState("saved");
+      setLoadedStudyKey(studyKey);
     }).catch((error: unknown) => {
-      if (!active) return;
+      if (!active || studyEpoch.current !== epoch) return;
       setSaveState("error");
       setSaveError(error instanceof Error ? error.message : "本设备保存不可用。");
+      setLoadedStudyKey(studyKey);
     });
     return () => {
       active = false;
+      studyEpoch.current += 1;
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      if (revisionTimer.current) clearTimeout(revisionTimer.current);
+      saveTimer.current = null;
+      revisionTimer.current = null;
     };
-  }, [question.qid, effectiveContentVersion]);
+  }, [question.qid, effectiveContentVersion, accountReady, studyOwnerId, studyKey]);
 
   async function persistAttempt(next: Attempt): Promise<boolean> {
     setAttempt(next);
@@ -219,7 +245,7 @@ export function QuestionPractice({
   function handleAnswerChange(value: string) {
     setAnswer(value);
     if (revealed) return;
-    const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion);
+    const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion, "", studyOwnerId);
     const next = { ...base, originalAnswer: value, skipped: false, updatedAt: new Date().toISOString() };
     setAttempt(next);
     setSaveState("saving");
@@ -229,7 +255,7 @@ export function QuestionPractice({
   }
 
   async function handleReveal(skip: boolean) {
-    const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion, answer);
+    const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion, answer, studyOwnerId);
     const now = new Date().toISOString();
     const next = { ...base, originalAnswer: answer, skipped: skip, revealedAt: now, updatedAt: now };
     setRevealed(true);
@@ -238,7 +264,7 @@ export function QuestionPractice({
   }
 
   function handleNewAttempt() {
-    const next = newAttempt(question.qid, effectiveContentVersion);
+    const next = newAttempt(question.qid, effectiveContentVersion, "", studyOwnerId);
     setAttempt(next);
     setAnswer("");
     setRevision("");
