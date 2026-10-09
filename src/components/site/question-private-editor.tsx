@@ -99,6 +99,7 @@ export function QuestionPrivateEditor({
         if (!data.account) {
           setAccount(null);
           setOverride(null);
+          onSelectionChange({ ownerUserId: "", override: null });
           return null;
         }
         const privateResponse = await fetch(`/api/questions/${encodeURIComponent(qid)}/private-override`, {
