@@ -26,6 +26,8 @@ export type Attempt = {
 };
 export type Draft = {
   qid: string;
+  /** Unset means legacy on-device data, not a Better Auth account. */
+  ownerUserId?: string;
   attemptId: string;
   contentVersion: string;
   kind: "answer" | "revision";
@@ -60,9 +62,10 @@ export type BackupFile = {
 };
 
 const DATABASE_NAME = "zhixu-study";
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const ATTEMPTS = "attempts";
 const DRAFTS = "drafts";
+const ACCOUNT_DRAFTS = "accountDrafts";
 const PREFERENCES = "preferences";
 const COACH_CONVERSATIONS = "coachConversations";
 let databasePromise: Promise<IDBDatabase> | null = null;
@@ -80,6 +83,8 @@ function openDatabase(): Promise<IDBDatabase> {
       const db = request.result;
       if (!db.objectStoreNames.contains(ATTEMPTS)) db.createObjectStore(ATTEMPTS, { keyPath: "attemptId" });
       if (!db.objectStoreNames.contains(DRAFTS)) db.createObjectStore(DRAFTS, { keyPath: "qid" });
+      // Never change legacy draft primary keys or auto-claim existing drafts for a user.
+      if (!db.objectStoreNames.contains(ACCOUNT_DRAFTS)) db.createObjectStore(ACCOUNT_DRAFTS, { keyPath: "storageKey" });
       if (!db.objectStoreNames.contains(PREFERENCES)) db.createObjectStore(PREFERENCES, { keyPath: "key" });
       if (!db.objectStoreNames.contains(COACH_CONVERSATIONS)) db.createObjectStore(COACH_CONVERSATIONS, { keyPath: "conversationId" });
     };
@@ -132,24 +137,41 @@ function transact<T>(
   }));
 }
 
+function accountDraftKey(ownerUserId: string, qid: string) {
+  return encodeURIComponent(ownerUserId) + ":" + encodeURIComponent(qid);
+}
+
+export function filterStudySnapshotForAccount(snapshot: StudySnapshot, ownerUserId: string | null): StudySnapshot {
+  const sameOwner = (item: { ownerUserId?: string }) => ownerUserId ? item.ownerUserId === ownerUserId : !item.ownerUserId;
+  return {
+    ...snapshot,
+    attempts: snapshot.attempts.filter(sameOwner),
+    drafts: snapshot.drafts.filter(sameOwner),
+  };
+}
+
+/** Deliberately reads all device profiles for explicit device-wide backups. UI consumers use getVisibleStudySnapshot. */
 export function getStudySnapshot(): Promise<StudySnapshot> {
-  return transact([ATTEMPTS, DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readonly", (tx, setResult, fail) => {
+  return transact([ATTEMPTS, DRAFTS, ACCOUNT_DRAFTS, PREFERENCES, COACH_CONVERSATIONS], "readonly", (tx, setResult, fail) => {
     const attemptsRequest = tx.objectStore(ATTEMPTS).getAll();
     const draftsRequest = tx.objectStore(DRAFTS).getAll();
+    const scopedDraftsRequest = tx.objectStore(ACCOUNT_DRAFTS).getAll();
     const preferencesRequest = tx.objectStore(PREFERENCES).getAll();
     const coachConversationsRequest = tx.objectStore(COACH_CONVERSATIONS).getAll();
     let attempts: Attempt[] | undefined;
     let drafts: Draft[] | undefined;
+    let accountDrafts: Draft[] | undefined;
     let preferences: Preferences[] | undefined;
     let coachConversations: CoachConversation[] | undefined;
     const finish = () => {
-      if (attempts && drafts && preferences && coachConversations) setResult({ attempts, drafts, preferences, coachConversations });
+      if (attempts && drafts && accountDrafts && preferences && coachConversations) setResult({ attempts, drafts: [...drafts, ...accountDrafts], preferences, coachConversations });
     };
     attemptsRequest.onsuccess = () => { attempts = attemptsRequest.result as Attempt[]; finish(); };
     draftsRequest.onsuccess = () => { drafts = draftsRequest.result as Draft[]; finish(); };
+    scopedDraftsRequest.onsuccess = () => { accountDrafts = (scopedDraftsRequest.result as Array<Draft & { storageKey: string }>).map(({ storageKey: _key, ...draft }) => draft); finish(); };
     preferencesRequest.onsuccess = () => { preferences = preferencesRequest.result as Preferences[]; finish(); };
     coachConversationsRequest.onsuccess = () => { coachConversations = coachConversationsRequest.result as CoachConversation[]; finish(); };
-    for (const request of [attemptsRequest, draftsRequest, preferencesRequest, coachConversationsRequest]) {
+    for (const request of [attemptsRequest, draftsRequest, scopedDraftsRequest, preferencesRequest, coachConversationsRequest]) {
       request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("无法读取本设备学习记录。"));
     }
   });
@@ -243,16 +265,22 @@ export function saveAttempt(attempt: Attempt): Promise<void> {
 }
 
 export function saveDraft(draft: Draft): Promise<void> {
-  return transact([DRAFTS], "readwrite", (tx, setResult, fail) => {
-    const request = tx.objectStore(DRAFTS).put(draft);
+  const scoped = Boolean(draft.ownerUserId);
+  const storeName = scoped ? ACCOUNT_DRAFTS : DRAFTS;
+  const value = scoped ? { ...draft, storageKey: accountDraftKey(draft.ownerUserId!, draft.qid) } : draft;
+  return transact([storeName], "readwrite", (tx, setResult, fail) => {
+    const request = tx.objectStore(storeName).put(value);
     request.onsuccess = () => setResult(undefined);
     request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("草稿未能保存。"));
   });
 }
 
-export function deleteDraft(qid: string): Promise<void> {
-  return transact([DRAFTS], "readwrite", (tx, setResult, fail) => {
-    const request = tx.objectStore(DRAFTS).delete(qid);
+export function deleteDraft(qid: string, ownerUserId?: string): Promise<void> {
+  const scoped = Boolean(ownerUserId);
+  const storeName = scoped ? ACCOUNT_DRAFTS : DRAFTS;
+  const key = scoped ? accountDraftKey(ownerUserId!, qid) : qid;
+  return transact([storeName], "readwrite", (tx, setResult, fail) => {
+    const request = tx.objectStore(storeName).delete(key);
     request.onsuccess = () => setResult(undefined);
     request.onerror = () => fail(request.error instanceof Error ? request.error : new Error("草稿清理失败。"));
   });
