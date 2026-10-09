@@ -227,15 +227,19 @@ export function QuestionPractice({
   }, [question.qid, effectiveContentVersion, accountReady, studyOwnerId, studyKey]);
 
   async function persistAttempt(next: Attempt): Promise<boolean> {
+    const epoch = studyEpoch.current;
+    if (!studyReady) return false;
     setAttempt(next);
     setSaveState("saving");
     setSaveError("");
     try {
       await saveAttempt(next);
+      if (studyEpoch.current !== epoch) return false;
       setSaveState("saved");
       setStoredSnapshot(true);
       return true;
     } catch (error) {
+      if (studyEpoch.current !== epoch) return false;
       setSaveState("error");
       setSaveError(error instanceof Error ? error.message : "本设备保存失败。");
       return false;
@@ -285,7 +289,11 @@ export function QuestionPractice({
     const draft = { qid: question.qid, attemptId: attempt.attemptId, contentVersion: attempt.contentVersion, kind: "revision" as const, text: value, savedAt: new Date().toISOString() };
     setSaveState("saving");
     revisionTimer.current = setTimeout(() => {
-      saveDraft(draft).then(() => setSaveState("saved")).catch((error: unknown) => {
+      const epoch = studyEpoch.current;
+      saveDraft(draft).then(() => {
+        if (studyEpoch.current === epoch) setSaveState("saved");
+      }).catch((error: unknown) => {
+        if (studyEpoch.current !== epoch) return;
         setSaveState("error");
         setSaveError(error instanceof Error ? error.message : "补充草稿保存失败。");
       });
@@ -293,7 +301,8 @@ export function QuestionPractice({
   }
 
   async function saveRevision() {
-    if (!attempt || !revision.trim()) return;
+    if (!attempt || !revision.trim() || !studyReady) return;
+    const epoch = studyEpoch.current;
     const now = new Date().toISOString();
     const next: Attempt = {
       ...attempt,
@@ -305,11 +314,14 @@ export function QuestionPractice({
     setSaveError("");
     try {
       await saveAttempt(next);
+      if (studyEpoch.current !== epoch) return;
       await deleteDraft(question.qid);
+      if (studyEpoch.current !== epoch) return;
       setSaveState("saved");
       setRevision("");
       setAssessedMessage("补充修订已保存，原始盲答仍保留。");
     } catch (error) {
+      if (studyEpoch.current !== epoch) return;
       setSaveState("error");
       setSaveError(error instanceof Error ? error.message : "补充修订未能保存。");
     }
@@ -389,6 +401,8 @@ export function QuestionPractice({
 
       <div className="question-grid">
         <div className="question-main-column">
+          {!studyReady ? <Card className="answer-card"><p role="status">正在确认账号并读取本设备记录…</p></Card> : (
+            <>
           {hasContentUpdate && <div className="content-version-warning" role="status">资料内容已更新。本次记录仍按 {attempt?.contentVersion} 保存；旧自评不会套用到新检查点。</div>}
           <Card className="answer-card">
             <div className="answer-card-header">
@@ -553,17 +567,19 @@ export function QuestionPractice({
               {attempt?.revisions.length ? <Card className="revision-history"><h2>补充修订历史</h2>{attempt.revisions.map((item) => <details key={item.revisionId}><summary>{new Date(item.savedAt).toLocaleString()}</summary>{typeof item.text === "string" && item.text.trim() ? <CoachMarkdown source={item.text} streaming={false} /> : <p className="revision-empty">（这条补充修订为空）</p>}</details>)}</Card> : null}
             </>
           )}
+            </>
+          )}
         </div>
 
         <aside className="question-aside" aria-label="题目关联信息">
-          <QuestionPrivateEditor
+          {localMode && <QuestionPrivateEditor
             qid={question.qid}
             contentVersion={contentVersion}
             publicTitle={question.title}
             publicExplanationMarkdown={publicExplanationMarkdown}
             publicCheckpoints={publicCheckpoints.map((checkpoint) => checkpoint.text)}
             onSelectionChange={handlePrivateSelectionChange}
-          />
+          />}
           <Card className="related-card">
             <div className="card-heading"><BookOpen size={18} aria-hidden="true" /><span>关联知识</span></div>
             <Link className="related-topic" href={"/knowledge/" + topicId + "/"}><span>{topicTitle}</span><small>{topicId} · {sourceLabel}</small></Link>
@@ -578,13 +594,13 @@ export function QuestionPractice({
               <WandSparkles size={15} aria-hidden="true" />
             </Link>
           </Card>
-          <Card className="session-card">
+          {studyReady && <Card className="session-card">
             <div className="card-heading"><FileQuestion size={18} aria-hidden="true" /><span>本题记录</span></div>
             <p>{attempt?.skipped ? "已标记为跳过作答" : relatedActiveAssessment ? "已保存个人自评" : revealed ? "已查看参考答案" : attempt ? "作答中" : "尚未开始"}</p>
             <small>内容版本 {attempt?.contentVersion ?? effectiveContentVersion}</small>
             {relatedActiveAssessment?.nextReviewOn && <small><Clock3 size={13} aria-hidden="true" /> {dueLabel}</small>}
             {storedSnapshot && <small>数据只保存在这个浏览器中。</small>}
-          </Card>
+          </Card>}
           <Card className="session-card">
             <div className="card-heading"><BookOpen size={18} aria-hidden="true" /><span>相关题目</span></div>
             <ul className="related-question-list">{relatedQuestionIds.slice(0, 5).map((id) => <li key={id}><Link href={"/questions/" + id + "/"}>{id}</Link></li>)}</ul>
