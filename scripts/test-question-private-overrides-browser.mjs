@@ -127,6 +127,8 @@ try {
   await browser.command("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-private-open]')?.innerText.includes('创建私人版本')"), "A private editor");
   await browser.evaluate("document.querySelector('[data-testid=question-private-open]').click()");
+  await browser.evaluate("document.querySelector('[data-testid=question-private-fullscreen]').click()");
+  assert.equal(await browser.evaluate("document.querySelector('.question-private-dialog')?.classList.contains('is-fullscreen')"), true, "the Markdown editor has an explicit full-screen mode");
   await browser.evaluate(setValue("#private-question-title", "A 的私人 D13 题干"));
   await browser.evaluate(setValue("#private-question-explanation", "## A 的讲解\n\n刷新后仍应存在。"));
   await browser.evaluate(setValue("#private-question-checkpoints", "A 检查点一\nA 检查点二"));

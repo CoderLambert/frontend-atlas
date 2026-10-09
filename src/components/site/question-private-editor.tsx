@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { GitPullRequest, LoaderCircle, LockKeyhole, PencilLine, RotateCcw, Save } from "lucide-react";
+import { GitPullRequest, LoaderCircle, LockKeyhole, Maximize2, Minimize2, PencilLine, RotateCcw, Save } from "lucide-react";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -61,6 +61,7 @@ export function QuestionPrivateEditor({
   const [explanation, setExplanation] = useState(publicExplanationMarkdown);
   const [checkpointText, setCheckpointText] = useState(publicCheckpoints.join("\n"));
   const [preview, setPreview] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const requestEpoch = useRef(0);
 
@@ -81,6 +82,7 @@ export function QuestionPrivateEditor({
       setAccount(null);
       setOverride(null);
       setEditorOpen(false);
+      setFullscreen(false);
       setResetOpen(false);
       onSelectionChange(null);
       return fetch("/api/site-account", { credentials: "same-origin", cache: "no-store", signal: controller.signal });
@@ -136,6 +138,7 @@ export function QuestionPrivateEditor({
     setNotice("");
     setError("");
     setPreview(false);
+    setFullscreen(false);
     setEditorOpen(true);
   }
 
@@ -252,12 +255,17 @@ export function QuestionPrivateEditor({
         {error && !editorOpen && <p className="assessment-error" role="alert">{error}</p>}
       </Card>
 
-      <Dialog open={editorOpen} onOpenChange={(open) => { if (!saving) setEditorOpen(open); }}>
-        <DialogContent className="question-private-dialog">
-          <DialogHeader>
-            <DialogTitle>编辑 {qid} 的私人版本</DialogTitle>
-            <DialogDescription>保存到当前登录账号的 SQLite 覆盖层。公共题库保持不变；不会自动提交公开申请。</DialogDescription>
-          </DialogHeader>
+      <Dialog open={editorOpen} onOpenChange={(open) => { if (!saving) { setEditorOpen(open); if (!open) setFullscreen(false); } }}>
+        <DialogContent className={`question-private-dialog${fullscreen ? " is-fullscreen" : ""}`}>
+          <div className="private-dialog-heading">
+            <DialogHeader>
+              <DialogTitle>编辑 {qid} 的私人版本</DialogTitle>
+              <DialogDescription>保存到当前登录账号的 SQLite 覆盖层。公共题库保持不变；不会自动提交公开申请。</DialogDescription>
+            </DialogHeader>
+            <Button type="button" variant="outline" size="sm" onClick={() => setFullscreen((value) => !value)} aria-pressed={fullscreen} data-testid="question-private-fullscreen">
+              {fullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}{fullscreen ? "退出全屏" : "全屏编辑"}
+            </Button>
+          </div>
           <div className="private-editor-fields">
             <div>
               <Label className="field-label" htmlFor="private-question-title">题干</Label>
