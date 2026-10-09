@@ -93,6 +93,7 @@ export const questionPrivateOverrides = sqliteTable("question_private_overrides"
   title: text("title").notNull(),
   explanationMarkdown: text("explanation_markdown").notNull(),
   checkpointsJson: text("checkpoints_json").notNull(),
+  generationId: text("generation_id").notNull().default(""),
   version: integer("version").notNull().default(1),
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
