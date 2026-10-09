@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type * as schema from "../db/schema.ts";
@@ -27,7 +28,9 @@ export class QuestionPrivateOverrideRepository {
       const existing = transaction.select().from(questionPrivateOverrides)
         .where(and(eq(questionPrivateOverrides.ownerUserId, ownerUserId), eq(questionPrivateOverrides.qid, qid)))
         .limit(1).all()[0] ?? null;
-      if ((existing?.version ?? null) !== input.expectedVersion) return { kind: "conflict" as const, current: existing };
+      if ((existing?.version ?? null) !== input.expectedVersion || (existing?.generationId ?? null) !== input.expectedGenerationId) {
+        return { kind: "conflict" as const, current: existing };
+      }
 
       const now = new Date();
       if (!existing) {
@@ -38,6 +41,7 @@ export class QuestionPrivateOverrideRepository {
           title: input.title,
           explanationMarkdown: input.explanationMarkdown,
           checkpointsJson: JSON.stringify(input.checkpoints),
+          generationId: randomUUID(),
           version: 1,
           createdAt: now,
           updatedAt: now,
@@ -56,22 +60,26 @@ export class QuestionPrivateOverrideRepository {
         eq(questionPrivateOverrides.ownerUserId, ownerUserId),
         eq(questionPrivateOverrides.qid, qid),
         eq(questionPrivateOverrides.version, existing.version),
+        eq(questionPrivateOverrides.generationId, existing.generationId),
       )).returning().get();
       return updated ? { kind: "saved" as const, value: updated } : { kind: "conflict" as const, current: this.find(ownerUserId, qid) };
     });
   }
 
-  delete(ownerUserId: string, qid: string, expectedVersion: number) {
+  delete(ownerUserId: string, qid: string, expectedVersion: number, expectedGenerationId: string) {
     return this.database.transaction((transaction) => {
       const existing = transaction.select().from(questionPrivateOverrides)
         .where(and(eq(questionPrivateOverrides.ownerUserId, ownerUserId), eq(questionPrivateOverrides.qid, qid)))
         .limit(1).all()[0] ?? null;
       if (!existing) return { kind: "not-found" as const };
-      if (existing.version !== expectedVersion) return { kind: "conflict" as const, current: existing };
+      if (existing.version !== expectedVersion || existing.generationId !== expectedGenerationId) {
+        return { kind: "conflict" as const, current: existing };
+      }
       transaction.delete(questionPrivateOverrides).where(and(
         eq(questionPrivateOverrides.ownerUserId, ownerUserId),
         eq(questionPrivateOverrides.qid, qid),
         eq(questionPrivateOverrides.version, expectedVersion),
+        eq(questionPrivateOverrides.generationId, expectedGenerationId),
       )).run();
       return { kind: "deleted" as const };
     });
@@ -80,6 +88,7 @@ export class QuestionPrivateOverrideRepository {
 
 type ValidatedOverrideInput = {
   expectedVersion: number | null;
+  expectedGenerationId: string | null;
   baseContentVersion: string;
   title: string;
   explanationMarkdown: string;
@@ -119,17 +128,26 @@ export class QuestionPrivateOverrideService {
 
   delete(ownerUserId: string, qid: string, body: Record<string, unknown>) {
     if (!this.knownQids.has(qid)) return { kind: "not-found" as const };
-    if (!Number.isSafeInteger(body.expectedVersion) || (body.expectedVersion as number) < 1) return { kind: "invalid" as const };
-    const result = this.repository.delete(ownerUserId, qid, body.expectedVersion as number);
+    if (!Number.isSafeInteger(body.expectedVersion) || (body.expectedVersion as number) < 1 || !validGenerationId(body.expectedGenerationId)) return { kind: "invalid" as const };
+    const result = this.repository.delete(ownerUserId, qid, body.expectedVersion as number, body.expectedGenerationId as string);
     return result.kind === "conflict"
       ? { kind: "conflict" as const, current: present(result.current) }
       : result;
   }
 }
 
+function validGenerationId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 128;
+}
+
 function validateInput(body: Record<string, unknown>): Omit<ValidatedOverrideInput, "baseContentVersion"> | null {
   const expectedVersion = body.expectedVersion;
-  if (expectedVersion !== null && (!Number.isSafeInteger(expectedVersion) || (expectedVersion as number) < 1)) return null;
+  const expectedGenerationId = body.expectedGenerationId;
+  if (expectedVersion === null) {
+    if (expectedGenerationId !== null) return null;
+  } else if (!Number.isSafeInteger(expectedVersion) || (expectedVersion as number) < 1 || !validGenerationId(expectedGenerationId)) {
+    return null;
+  }
   if (typeof body.title !== "string" || !body.title.trim() || body.title.length > 500) return null;
   if (typeof body.explanationMarkdown !== "string" || !body.explanationMarkdown.trim() || body.explanationMarkdown.length > 200_000) return null;
   if (!Array.isArray(body.checkpoints) || body.checkpoints.length < 1 || body.checkpoints.length > 20) return null;
@@ -137,6 +155,7 @@ function validateInput(body: Record<string, unknown>): Omit<ValidatedOverrideInp
   if (checkpoints.some((value) => !value || value.length > 2_000)) return null;
   return {
     expectedVersion: expectedVersion as number | null,
+    expectedGenerationId: expectedGenerationId as string | null,
     title: body.title.trim(),
     explanationMarkdown: body.explanationMarkdown.trim(),
     checkpoints,
@@ -152,6 +171,7 @@ function present(value: StoredOverride) {
   }
   return {
     qid: value.qid,
+    generationId: value.generationId,
     baseContentVersion: value.baseContentVersion,
     title: value.title,
     explanationMarkdown: value.explanationMarkdown,
