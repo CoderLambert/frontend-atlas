@@ -135,6 +135,9 @@ try {
   await browser.evaluate("document.querySelector('[data-testid=question-private-save]').click()");
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A override applied");
   assert.deepEqual(rows().map((row) => ({ owner: row.owner_user_id, title: row.title, version: row.version })), [{ owner: "mock-user-a", title: "A 的私人 D13 题干", version: 1 }]);
+  await waitFor(() => browser.evaluate("document.querySelector('#answer-draft') !== null"), "A study record ready");
+  await browser.evaluate(setValue("#answer-draft", "只有 A 的私人作答"));
+  await waitFor(() => browser.evaluate("document.querySelector('.local-save-note')?.textContent.includes('已保存至本设备')"), "A practice saved");
 
   await browser.command("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A override after refresh");
@@ -144,6 +147,9 @@ try {
   await browser.evaluate("(() => { const channel = new BroadcastChannel('frontend-atlas-site-account'); channel.postMessage({ type: 'account-changed' }); channel.close(); return true; })()");
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-private-open]')?.innerText.includes('创建私人版本') && document.querySelector('#private-question-title') === null"), "B sees public version and A's editor closes");
   assert.notEqual(await browser.evaluate("document.querySelector('.question-heading h1')?.textContent"), "A 的私人 D13 题干", "B cannot see A's private title");
+  await waitFor(() => browser.evaluate("document.querySelector('#answer-draft')?.value === ''"), "B never sees A's private answer");
+  await browser.evaluate(setValue("#answer-draft", "只有 B 的作答"));
+  await waitFor(() => browser.evaluate("document.querySelector('.local-save-note')?.textContent.includes('已保存至本设备')"), "B practice saved");
 
   await browser.evaluate("document.querySelector('[data-testid=question-private-open]').click()");
   await browser.evaluate(setValue("#private-question-title", "B 的私人 D13 题干"));
@@ -155,6 +161,7 @@ try {
   assert.equal(await login("mock-user-a"), 200);
   await browser.evaluate("(() => { const channel = new BroadcastChannel('frontend-atlas-site-account'); channel.postMessage({ type: 'account-changed' }); channel.close(); return true; })()");
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A restored after account switch");
+  await waitFor(() => browser.evaluate("document.querySelector('#answer-draft')?.value === '只有 A 的私人作答'"), "A gets only A's answer again");
   const previousGeneration = rows().find((row) => row.owner_user_id === "mock-user-a").generation_id;
   await browser.evaluate("document.querySelector('[data-testid=question-private-reset]').click()");
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-private-reset-confirm]') !== null"), "reset confirmation");
