@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CalendarClock, Clock3 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { getStudySnapshot, saveAttempt, type Assessment, type Attempt } from "@/lib/study-store";
+import { getVisibleStudySnapshot, saveAttempt, subscribeToStudyAccountChanges, type Assessment, type Attempt } from "@/lib/study-store";
 
 type QuestionLabel = { qid: string; title: string; topicId: string };
 
@@ -37,11 +37,22 @@ export function ReviewQueue({ questions, contentVersion }: { questions: Question
   const [activeTab, setActiveTab] = useState("due");
   const [draftDates, setDraftDates] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
+  const [accountEpoch, setAccountEpoch] = useState(0);
+  const accountEpochRef = useRef(0);
   const questionLookup = useMemo(() => new Map(questions.map((question) => [question.qid, question])), [questions]);
+
+  useEffect(() => subscribeToStudyAccountChanges(() => {
+    accountEpochRef.current += 1;
+    setAttempts([]);
+    setError("");
+    setMessage("");
+    setLoading(true);
+    setAccountEpoch((epoch) => epoch + 1);
+  }), []);
 
   useEffect(() => {
     let active = true;
-    getStudySnapshot().then((snapshot) => {
+    getVisibleStudySnapshot().then((snapshot) => {
       if (!active) return;
       setAttempts(snapshot.attempts);
       setLoading(false);
@@ -51,7 +62,7 @@ export function ReviewQueue({ questions, contentVersion }: { questions: Question
       setLoading(false);
     });
     return () => { active = false; };
-  }, []);
+  }, [accountEpoch]);
 
   const records = useMemo(() => {
     return attempts.flatMap((attempt) => {
@@ -73,6 +84,7 @@ export function ReviewQueue({ questions, contentVersion }: { questions: Question
   const shown = activeTab === "due" ? due : activeTab === "upcoming" ? upcoming : activeTab === "unscheduled" ? unscheduled : dismissed;
 
   async function updateAssessment(attempt: Attempt, assessment: Assessment, patch: Partial<Assessment>, successMessage: string) {
+    const epoch = accountEpochRef.current;
     const updatedAssessment = { ...assessment, ...patch };
     const next: Attempt = {
       ...attempt,
@@ -81,10 +93,12 @@ export function ReviewQueue({ questions, contentVersion }: { questions: Question
     };
     try {
       await saveAttempt(next);
+      if (accountEpochRef.current !== epoch) return;
       setAttempts((current) => current.map((item) => item.attemptId === next.attemptId ? next : item));
       setMessage(successMessage);
       setError("");
     } catch (reason) {
+      if (accountEpochRef.current !== epoch) return;
       setError(reason instanceof Error ? reason.message : "复习安排未能保存。");
     }
   }
