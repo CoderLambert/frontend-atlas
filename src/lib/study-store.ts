@@ -98,7 +98,11 @@ function openDatabase(): Promise<IDBDatabase> {
     };
     request.onsuccess = () => {
       const db = request.result;
-      db.onversionchange = () => db.close();
+      db.onversionchange = () => {
+        db.close();
+        // Another tab may upgrade the database. Reopen instead of reusing a closed connection.
+        databasePromise = null;
+      };
       resolve(db);
     };
   });
