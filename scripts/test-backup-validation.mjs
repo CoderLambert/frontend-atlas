@@ -63,6 +63,14 @@ const validV2 = parseBackupText(JSON.stringify(makeBackup({ schemaVersion: 2, co
 assert.equal(validV2.backup.coachConversations.length, 1);
 assert.equal(validV2.backup.coachConversations[0].assistantOutput, coachConversation.assistantOutput);
 
+const ownedAttempt = { ...attempt, attemptId: "attempt_owner_b", ownerUserId: "user-b", contentVersion: "private-".repeat(20) };
+const ownedDraft = { ...draft, ownerUserId: "user-b", attemptId: ownedAttempt.attemptId, contentVersion: ownedAttempt.contentVersion };
+const owned = parseBackupText(JSON.stringify(makeBackup({ attempts: [attempt, ownedAttempt], drafts: [draft, ownedDraft] })), knownQids);
+assert.equal(owned.backup.attempts[1].ownerUserId, "user-b", "backup preserves verified owner scope");
+assert.equal(owned.backup.drafts[1].ownerUserId, "user-b", "same qid in a second account is not a conflict");
+assert.throws(() => parseBackupText(JSON.stringify(makeBackup({ attempts: [{ ...attempt, ownerUserId: {} }] })), knownQids), /账号标识/);
+assert.throws(() => parseBackupText(JSON.stringify(makeBackup({ drafts: [{ ...draft, ownerUserId: "*bad" }] })), knownQids), /账号标识/);
+
 const legacyAttempt = { ...attempt, attemptId: "attempt_legacy_f01", qid: "F01", contentVersion: "2026-10-04.1" };
 const legacyDraft = { ...draft, qid: "F01", attemptId: "attempt_legacy_f01", contentVersion: "2026-10-04.1" };
 const legacyImport = parseBackupText(JSON.stringify(makeBackup({
