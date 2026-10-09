@@ -12,7 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { hasMeaningfulDifference, MAX_BACKUP_BYTES, parseBackupText } from "@/lib/backup";
-import { backupFromSnapshot, clearAllStudyData, getStudySnapshot, mergeStudyData, replaceAllStudyData, type Attempt, type BackupFile, type CoachConversation, type Draft, type Preferences, type StudySnapshot } from "@/lib/study-store";
+import { backupFromSnapshot, clearAllStudyData, draftProfileKey, getStudySnapshot, mergeStudyData, replaceAllStudyData, type Attempt, type BackupFile, type CoachConversation, type Draft, type Preferences, type StudySnapshot } from "@/lib/study-store";
 
 type Conflict<T> = { id: string; local: T; incoming: T };
 type ImportPlan = {
@@ -57,7 +57,7 @@ function conflictRows<T>(
 
 function planImport(backup: BackupFile, unknownQids: string[], baseline: StudySnapshot): ImportPlan {
   const attempts = conflictRows(backup.attempts, baseline.attempts, (item) => item.attemptId);
-  const drafts = conflictRows(backup.drafts, baseline.drafts, (item) => item.qid);
+  const drafts = conflictRows(backup.drafts, baseline.drafts, draftProfileKey);
   const preferences = conflictRows(backup.preferences, baseline.preferences, (item) => item.key);
   const coachConversations = conflictRows(backup.coachConversations, baseline.coachConversations, (item) => item.conversationId);
   return {
@@ -163,7 +163,7 @@ export function DataManager({ knownQids, contentSetVersion }: { knownQids: strin
       const current = await getStudySnapshot();
       const stale =
         dataChangedSincePreview(plan.baseline.attempts, current.attempts, plan.conflicts.attempts, (item) => item.attemptId) ||
-        dataChangedSincePreview(plan.baseline.drafts, current.drafts, plan.conflicts.drafts, (item) => item.qid) ||
+        dataChangedSincePreview(plan.baseline.drafts, current.drafts, plan.conflicts.drafts, draftProfileKey) ||
         dataChangedSincePreview(plan.baseline.preferences, current.preferences, plan.conflicts.preferences, (item) => item.key) ||
         dataChangedSincePreview(plan.baseline.coachConversations, current.coachConversations, plan.conflicts.coachConversations, (item) => item.conversationId);
       if (stale) throw new Error("本设备数据在预览后发生变化。请重新选择备份并核对冲突。");
@@ -231,7 +231,7 @@ export function DataManager({ knownQids, contentSetVersion }: { knownQids: strin
   return (
     <div className="content-page data-page">
       <header className="content-page-header">
-        <div><div className="eyebrow">THIS BROWSER · 由你掌握</div><h1>本设备数据</h1><p>练习记录、草稿和 AI 对话只保存在这个浏览器的 IndexedDB 中，不会同步到账号或其他设备。</p></div>
+        <div><div className="eyebrow">THIS BROWSER · 由你掌握</div><h1>本设备数据</h1><p>这页管理整个浏览器的设备级 IndexedDB，包括历史记录和各登录账号的本设备记录；导出、覆盖、清除均跨账号生效，不会同步到服务器。</p></div>
         <Badge variant="outline"><Database size={14} aria-hidden="true" /> 本设备</Badge>
       </header>
 
@@ -270,7 +270,7 @@ export function DataManager({ knownQids, contentSetVersion }: { knownQids: strin
           {(plan.conflicts.attempts.length > 0 || plan.conflicts.drafts.length > 0 || plan.conflicts.preferences.length > 0 || plan.conflicts.coachConversations.length > 0) && (
             <Accordion type="multiple" className="import-conflicts">
               {plan.conflicts.attempts.length > 0 && <AccordionItem value="attempts"><AccordionTrigger>练习记录冲突 · {plan.conflicts.attempts.length}</AccordionTrigger><AccordionContent><div className="conflict-list">{plan.conflicts.attempts.map((conflict) => <div className="conflict-row" key={conflict.id}><div><strong>{conflict.local.qid} · {conflict.id}</strong><small>本机更新 {new Date(conflict.local.updatedAt).toLocaleString()} · 导入更新 {new Date(conflict.incoming.updatedAt).toLocaleString()}</small></div><Select value={attemptChoices[conflict.id] ?? "local"} onValueChange={(value) => setAttemptChoices((current) => ({ ...current, [conflict.id]: value as "local" | "incoming" }))}><SelectTrigger aria-label={conflict.id + " 的冲突选择"}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="local">保留本机</SelectItem><SelectItem value="incoming">使用导入记录</SelectItem></SelectContent></Select></div>)}</div></AccordionContent></AccordionItem>}
-              {plan.conflicts.drafts.length > 0 && <AccordionItem value="drafts"><AccordionTrigger>草稿冲突 · {plan.conflicts.drafts.length}</AccordionTrigger><AccordionContent><div className="conflict-list">{plan.conflicts.drafts.map((conflict) => <div className="conflict-row" key={conflict.id}><div><strong>{conflict.id} 草稿</strong><small>本机保存 {new Date(conflict.local.savedAt).toLocaleString()} · 导入保存 {new Date(conflict.incoming.savedAt).toLocaleString()}</small></div><Select value={draftChoices[conflict.id] ?? "local"} onValueChange={(value) => setDraftChoices((current) => ({ ...current, [conflict.id]: value as "local" | "incoming" }))}><SelectTrigger aria-label={conflict.id + " 草稿冲突选择"}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="local">保留本机</SelectItem><SelectItem value="incoming">使用导入草稿</SelectItem></SelectContent></Select></div>)}</div></AccordionContent></AccordionItem>}
+              {plan.conflicts.drafts.length > 0 && <AccordionItem value="drafts"><AccordionTrigger>草稿冲突 · {plan.conflicts.drafts.length}</AccordionTrigger><AccordionContent><div className="conflict-list">{plan.conflicts.drafts.map((conflict) => <div className="conflict-row" key={conflict.id}><div><strong>{conflict.local.qid} · {conflict.local.ownerUserId ? "账号记录" : "旧本设备记录"} 草稿</strong><small>本机保存 {new Date(conflict.local.savedAt).toLocaleString()} · 导入保存 {new Date(conflict.incoming.savedAt).toLocaleString()}</small></div><Select value={draftChoices[conflict.id] ?? "local"} onValueChange={(value) => setDraftChoices((current) => ({ ...current, [conflict.id]: value as "local" | "incoming" }))}><SelectTrigger aria-label={conflict.id + " 草稿冲突选择"}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="local">保留本机</SelectItem><SelectItem value="incoming">使用导入草稿</SelectItem></SelectContent></Select></div>)}</div></AccordionContent></AccordionItem>}
               {plan.conflicts.preferences.length > 0 && <AccordionItem value="preferences"><AccordionTrigger>偏好冲突 · {plan.conflicts.preferences.length}</AccordionTrigger><AccordionContent><div className="conflict-list">{plan.conflicts.preferences.map((conflict) => <div className="conflict-row" key={conflict.id}><div><strong>{conflict.id}</strong></div><Select value={preferenceChoices[conflict.id] ?? "local"} onValueChange={(value) => setPreferenceChoices((current) => ({ ...current, [conflict.id]: value as "local" | "incoming" }))}><SelectTrigger aria-label={conflict.id + " 偏好冲突选择"}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="local">保留本机</SelectItem><SelectItem value="incoming">使用导入偏好</SelectItem></SelectContent></Select></div>)}</div></AccordionContent></AccordionItem>}
               {plan.conflicts.coachConversations.length > 0 && <AccordionItem value="coach-conversations"><AccordionTrigger>AI 对话冲突 · {plan.conflicts.coachConversations.length}</AccordionTrigger><AccordionContent><div className="conflict-list">{plan.conflicts.coachConversations.map((conflict) => <div className="conflict-row" key={conflict.id}><div><strong>{conflict.local.qid} · {conflict.local.mode}</strong><small>本机更新 {new Date(conflict.local.updatedAt).toLocaleString()} · 导入更新 {new Date(conflict.incoming.updatedAt).toLocaleString()}</small></div><Select value={conversationChoices[conflict.id] ?? "local"} onValueChange={(value) => setConversationChoices((current) => ({ ...current, [conflict.id]: value as "local" | "incoming" }))}><SelectTrigger aria-label={conflict.id + " 的 AI 对话冲突选择"}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="local">保留本机</SelectItem><SelectItem value="incoming">使用导入记录</SelectItem></SelectContent></Select></div>)}</div></AccordionContent></AccordionItem>}
             </Accordion>
@@ -280,7 +280,7 @@ export function DataManager({ knownQids, contentSetVersion }: { knownQids: strin
             <AlertDialog open={replaceOpen} onOpenChange={(open) => { setReplaceOpen(open); if (!open) setBackupConfirmation(false); }}>
               <AlertDialogTrigger asChild><Button variant="outline" onClick={() => setBackupConfirmation(false)} disabled={busy}>完整覆盖本设备</Button></AlertDialogTrigger>
               <AlertDialogContent>
-                <AlertDialogHeader><AlertDialogTitle>覆盖本设备全部学习记录？</AlertDialogTitle><AlertDialogDescription>覆盖无法撤销。系统会先发起一份当前数据备份，再用已校验的文件整批替换记录。</AlertDialogDescription></AlertDialogHeader>
+                <AlertDialogHeader><AlertDialogTitle>覆盖本设备全部学习记录？</AlertDialogTitle><AlertDialogDescription>覆盖无法撤销，将影响此浏览器内所有站点账号的本设备记录。系统会先发起一份当前数据备份，再用已校验的文件整批替换记录。</AlertDialogDescription></AlertDialogHeader>
                 <Button variant="outline" onClick={() => { if (downloadCurrentBackup()) setBackupConfirmation(true); }}><Download size={15} aria-hidden="true" />下载现有备份</Button>
                 <Label className="confirm-data-choice"><Checkbox checked={backupConfirmation} onCheckedChange={(value) => setBackupConfirmation(value === true)} /><span>我已确认备份已下载，并理解这会替换全部本机记录。</span></Label>
                 <AlertDialogFooter><AlertDialogCancel disabled={busy}>取消</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={busy || !backupConfirmation} onClick={(event) => { event.preventDefault(); void handleReplace(); }}>{busy ? "正在覆盖…" : "确认覆盖"}</AlertDialogAction></AlertDialogFooter>
@@ -296,7 +296,7 @@ export function DataManager({ knownQids, contentSetVersion }: { knownQids: strin
         <AlertDialog open={clearOpen} onOpenChange={(open) => { setClearOpen(open); if (!open) setClearBackupConfirmation(false); }}>
           <AlertDialogTrigger asChild><Button variant="destructive" disabled={!canClear || busy}>清除记录</Button></AlertDialogTrigger>
           <AlertDialogContent>
-            <AlertDialogHeader><AlertDialogTitle>清除本设备学习记录？</AlertDialogTitle><AlertDialogDescription>此操作无法撤销。继续前先下载现有数据备份。</AlertDialogDescription></AlertDialogHeader>
+            <AlertDialogHeader><AlertDialogTitle>清除本设备学习记录？</AlertDialogTitle><AlertDialogDescription>此操作无法撤销，将清除这个浏览器里所有站点账号的本设备学习记录。继续前先下载现有数据备份。</AlertDialogDescription></AlertDialogHeader>
             <Button variant="outline" onClick={() => { if (downloadCurrentBackup()) setClearBackupConfirmation(true); }}><Download size={15} aria-hidden="true" />下载现有备份</Button>
             <Label className="confirm-data-choice"><Checkbox checked={clearBackupConfirmation} onCheckedChange={(value) => setClearBackupConfirmation(value === true)} /><span>我已确认备份已下载，仍要清除全部本机记录。</span></Label>
             <AlertDialogFooter><AlertDialogCancel disabled={busy}>保留记录</AlertDialogCancel><AlertDialogAction variant="destructive" disabled={busy || !clearBackupConfirmation} onClick={(event) => { event.preventDefault(); void handleClear(); }}>{busy ? "正在清除…" : "确认清除"}</AlertDialogAction></AlertDialogFooter>
