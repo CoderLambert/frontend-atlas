@@ -1,4 +1,4 @@
-import { draftProfileKey, type Assessment, type Attempt, type BackupFile, type CoachConversation, type CoachConversationStatus, type CoachMode, type Draft, type Preferences, type SelfRating } from "@/lib/study-store";
+import { draftProfileKey, type Assessment, type Attempt, type BackupFile, type CoachConversation, type CoachConversationStatus, type CoachMode, type Draft, type Preferences, type SelfRating } from "./study-store.ts";
 
 export const MAX_BACKUP_BYTES = 10 * 1024 * 1024;
 const ratings = new Set<SelfRating>(["not_yet", "incomplete", "clear"]);
