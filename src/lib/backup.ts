@@ -1,4 +1,4 @@
-import type { Assessment, Attempt, BackupFile, CoachConversation, CoachConversationStatus, CoachMode, Draft, Preferences, SelfRating } from "@/lib/study-store";
+import { draftProfileKey, type Assessment, type Attempt, type BackupFile, type CoachConversation, type CoachConversationStatus, type CoachMode, type Draft, type Preferences, type SelfRating } from "@/lib/study-store";
 
 export const MAX_BACKUP_BYTES = 10 * 1024 * 1024;
 const ratings = new Set<SelfRating>(["not_yet", "incomplete", "clear"]);
@@ -48,8 +48,9 @@ function parseAttempt(value: unknown, knownQids: Set<string>): { record: Attempt
   const item = value as Record<string, unknown>;
   if (!validId(item.attemptId) || typeof item.qid !== "string" || !item.qid.trim()) return invalid("练习记录缺少有效编号。");
   if (!knownQids.has(item.qid)) return { record: null, unknownQid: item.qid };
+  if (item.ownerUserId !== undefined && !validId(item.ownerUserId)) return invalid("练习记录的账号标识无效。");
   const qid = item.qid;
-  if (typeof item.contentVersion !== "string" || item.contentVersion.length > 100 || !validTimestamp(item.startedAt) || !validTimestamp(item.updatedAt)) return invalid("练习记录的版本或时间信息无效。");
+  if (typeof item.contentVersion !== "string" || item.contentVersion.length > 256 || !validTimestamp(item.startedAt) || !validTimestamp(item.updatedAt)) return invalid("练习记录的版本或时间信息无效。");
   if (typeof item.originalAnswer !== "string" || item.originalAnswer.length > 100000) return invalid("练习回答内容超出允许范围。");
   if (!Array.isArray(item.revisions) || item.revisions.length > 1000) return invalid("修订记录格式无效。");
   const revisions = item.revisions.map((revision) => {
@@ -65,6 +66,7 @@ function parseAttempt(value: unknown, knownQids: Set<string>): { record: Attempt
     record: {
       attemptId: item.attemptId as string,
       qid,
+      ...(typeof item.ownerUserId === "string" ? { ownerUserId: item.ownerUserId } : {}),
       contentVersion: item.contentVersion as string,
       startedAt: item.startedAt as string,
       originalAnswer: item.originalAnswer as string,
@@ -83,10 +85,11 @@ function parseDraft(value: unknown, knownQids: Set<string>): { record: Draft | n
   const item = value as Record<string, unknown>;
   if (typeof item.qid !== "string" || !item.qid.trim() || !validId(item.attemptId)) return invalid("草稿记录缺少有效编号。");
   if (!knownQids.has(item.qid)) return { record: null, unknownQid: item.qid };
-  if (typeof item.contentVersion !== "string" || item.contentVersion.length > 100 || !validTimestamp(item.savedAt)) return invalid("草稿版本或保存时间无效。");
+  if (item.ownerUserId !== undefined && !validId(item.ownerUserId)) return invalid("草稿记录的账号标识无效。");
+  if (typeof item.contentVersion !== "string" || item.contentVersion.length > 256 || !validTimestamp(item.savedAt)) return invalid("草稿版本或保存时间无效。");
   if (item.kind !== "answer" && item.kind !== "revision") return invalid("草稿类型无效。");
   if (typeof item.text !== "string" || item.text.length > 100000) return invalid("草稿内容超出允许范围。");
-  return { record: { qid: item.qid, attemptId: item.attemptId as string, contentVersion: item.contentVersion as string, kind: item.kind, text: item.text, savedAt: item.savedAt as string }, unknownQid: null };
+  return { record: { qid: item.qid, ...(typeof item.ownerUserId === "string" ? { ownerUserId: item.ownerUserId } : {}), attemptId: item.attemptId as string, contentVersion: item.contentVersion as string, kind: item.kind, text: item.text, savedAt: item.savedAt as string }, unknownQid: null };
 }
 
 function parsePreference(value: unknown): Preferences {
@@ -102,7 +105,7 @@ function parseCoachConversation(value: unknown, knownQids: Set<string>): { recor
   if (!validId(item.conversationId) || typeof item.qid !== "string" || !item.qid.trim()) return invalid("AI 对话记录缺少有效编号。");
   if (!knownQids.has(item.qid)) return { record: null, unknownQid: item.qid };
   if (item.attemptId !== null && item.attemptId !== undefined && !validId(item.attemptId)) return invalid("AI 对话关联的练习编号无效。");
-  if (typeof item.contentVersion !== "string" || item.contentVersion.length > 100 || !validTimestamp(item.startedAt) || !validTimestamp(item.updatedAt)) return invalid("AI 对话版本或时间信息无效。");
+  if (typeof item.contentVersion !== "string" || item.contentVersion.length > 256 || !validTimestamp(item.startedAt) || !validTimestamp(item.updatedAt)) return invalid("AI 对话版本或时间信息无效。");
   if (!coachModes.has(item.mode as CoachMode) || typeof item.model !== "string" || !item.model.trim() || item.model.length > 200) return invalid("AI 对话的模式或模型无效。");
   if (typeof item.userInput !== "string" || item.userInput.length > 12_000 || typeof item.assistantOutput !== "string" || item.assistantOutput.length > 100_000) return invalid("AI 对话内容超出允许范围。");
   if (!conversationStatuses.has(item.status as CoachConversationStatus)) return invalid("AI 对话状态无法识别。");
@@ -155,7 +158,7 @@ export function parseBackupText(text: string, knownQids: Set<string>): { backup:
     : [];
 
   const attemptIds = attempts.map((attempt) => attempt.attemptId);
-  const draftIds = drafts.map((draft) => draft.qid);
+  const draftIds = drafts.map(draftProfileKey);
   const preferenceIds = preferences.map((preference) => preference.key);
   const conversationIds = conversations.map((conversation) => conversation.conversationId);
   if (new Set(attemptIds).size !== attemptIds.length || new Set(draftIds).size !== draftIds.length || new Set(preferenceIds).size !== preferenceIds.length || new Set(conversationIds).size !== conversationIds.length) return invalid("备份文件中包含重复记录编号。");
