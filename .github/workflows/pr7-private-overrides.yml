@@ -1,9 +1,6 @@
 name: Private question override regression
 
 on:
-  push:
-    branches:
-      - codex/better-auth-local-setup
   pull_request:
     branches:
       - main
