@@ -187,5 +187,6 @@ try {
   for (const socket of sockets) if (socket.readyState < WebSocket.CLOSING) socket.close();
   await stopProcess(chromeProcess);
   await stopProcess(nextProcess);
-  rmSync(tempRoot, { recursive: true, force: true });
+  // Browser and Next subprocesses may finish flushing profile files just after exit.
+  rmSync(tempRoot, { recursive: true, force: true, maxRetries: 12, retryDelay: 150 });
 }
