@@ -96,7 +96,7 @@ function setValue(selector, value) {
 
 function rows() {
   const opened = openSqliteDatabase(databasePath);
-  try { return opened.client.prepare("SELECT owner_user_id, qid, title, explanation_markdown, checkpoints_json, version FROM question_private_overrides ORDER BY owner_user_id").all(); }
+  try { return opened.client.prepare("SELECT owner_user_id, qid, title, explanation_markdown, checkpoints_json, generation_id, version FROM question_private_overrides ORDER BY owner_user_id").all(); }
   finally { opened.client.close(); }
 }
 
@@ -155,12 +155,22 @@ try {
   assert.equal(await login("mock-user-a"), 200);
   await browser.evaluate("(() => { const channel = new BroadcastChannel('frontend-atlas-site-account'); channel.postMessage({ type: 'account-changed' }); channel.close(); return true; })()");
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A restored after account switch");
+  const previousGeneration = rows().find((row) => row.owner_user_id === "mock-user-a").generation_id;
   await browser.evaluate("document.querySelector('[data-testid=question-private-reset]').click()");
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-private-reset-confirm]') !== null"), "reset confirmation");
   await browser.evaluate("document.querySelector('[data-testid=question-private-reset-confirm]').click()");
   await waitFor(() => rows().length === 1, "A row removed");
   assert.equal(rows()[0].owner_user_id, "mock-user-b", "reset removes only A's private override");
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-private-open]')?.innerText.includes('创建私人版本')"), "public version restored for A");
+  await browser.evaluate("document.querySelector('[data-testid=question-private-open]').click()");
+  await browser.evaluate(setValue("#private-question-title", "A 再次创建"));
+  await browser.evaluate("document.querySelector('[data-testid=question-private-save]').click()");
+  await waitFor(() => rows().length === 2 && rows().some((row) => row.title === "A 再次创建"), "A recreated after reset");
+  const recreated = rows().find((row) => row.owner_user_id === "mock-user-a");
+  assert.notEqual(recreated.generation_id, previousGeneration, "reset and recreation change the generation");
+  const staleResponse = await browser.evaluate(`fetch('/api/questions/D13/private-override', { method: 'DELETE', headers: { 'content-type': 'application/json', 'x-frontend-atlas-request': '1', 'x-frontend-atlas-account-id': 'mock-user-a' }, body: JSON.stringify({ expectedVersion: 1, expectedGenerationId: ${JSON.stringify(previousGeneration)} }) }).then((res) => res.status)`);
+  assert.equal(staleResponse, 409, "old page cannot delete recreated private version");
+  assert.equal(rows().find((row) => row.owner_user_id === "mock-user-a").title, "A 再次创建");
 
   process.stdout.write("Question private override browser flow passed: login, private save, refresh recovery, account isolation, and reset.\n");
 } catch (error) {
