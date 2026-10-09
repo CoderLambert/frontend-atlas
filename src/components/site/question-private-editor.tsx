@@ -174,6 +174,7 @@ export function QuestionPrivateEditor({
         },
         body: JSON.stringify({
           expectedVersion: override?.version ?? null,
+          expectedGenerationId: override?.generationId ?? null,
           title,
           explanationMarkdown: explanation,
           checkpoints,
@@ -215,7 +216,7 @@ export function QuestionPrivateEditor({
           [requestHeaderName]: "1",
           [expectedAccountHeaderName]: account.id,
         },
-        body: JSON.stringify({ expectedVersion: override.version }),
+        body: JSON.stringify({ expectedVersion: override.version, expectedGenerationId: override.generationId }),
       });
       const data = await readJson(response);
       if (requestEpoch.current !== epoch) return;
