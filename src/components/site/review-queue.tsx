@@ -52,12 +52,13 @@ export function ReviewQueue({ questions, contentVersion }: { questions: Question
 
   useEffect(() => {
     let active = true;
+    const epoch = accountEpochRef.current;
     getVisibleStudySnapshot().then((snapshot) => {
-      if (!active) return;
+      if (!active || epoch !== accountEpochRef.current) return;
       setAttempts(snapshot.attempts);
       setLoading(false);
     }).catch((reason: unknown) => {
-      if (!active) return;
+      if (!active || epoch !== accountEpochRef.current) return;
       setError(reason instanceof Error ? reason.message : "无法读取本设备的复习记录。");
       setLoading(false);
     });

@@ -48,8 +48,10 @@ export function QuestionBank({ questions, topics }: { questions: QuestionIndexIt
   const [progressState, setProgressState] = useState<"loading" | "ready" | "error">("loading");
   const restoreRef = useRef(false);
   const [accountEpoch, setAccountEpoch] = useState(0);
+  const accountEpochRef = useRef(0);
 
   useEffect(() => subscribeToStudyAccountChanges(() => {
+    accountEpochRef.current += 1;
     setAttemptsByQid(new Map());
     setProgressState("loading");
     setAccountEpoch((epoch) => epoch + 1);
@@ -57,11 +59,12 @@ export function QuestionBank({ questions, topics }: { questions: QuestionIndexIt
 
   useEffect(() => {
     let active = true;
+    const epoch = accountEpochRef.current;
     getVisibleStudySnapshot().then((snapshot) => {
-      if (!active) return;
+      if (!active || epoch !== accountEpochRef.current) return;
       setAttemptsByQid(latestAttemptsByQuestion(snapshot.attempts));
       setProgressState("ready");
-    }).catch(() => { if (active) setProgressState("error"); });
+    }).catch(() => { if (active && epoch === accountEpochRef.current) setProgressState("error"); });
     return () => { active = false; };
   }, [accountEpoch]);
 

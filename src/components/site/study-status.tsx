@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BookOpen, Clock3, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getVisibleStudySnapshot, subscribeToStudyAccountChanges, type Attempt, type StudySnapshot } from "@/lib/study-store";
@@ -25,8 +25,10 @@ export function StudyStatusContent({ kind, contentVersion }: { kind: "progress" 
   const [state, setState] = useState<LoadState>("loading");
   const [snapshot, setSnapshot] = useState<StudySnapshot | null>(null);
   const [attemptNo, setAttemptNo] = useState(0);
+  const accountEpochRef = useRef(0);
 
   useEffect(() => subscribeToStudyAccountChanges(() => {
+    accountEpochRef.current += 1;
     setSnapshot(null);
     setState("loading");
     setAttemptNo((value) => value + 1);
@@ -34,11 +36,12 @@ export function StudyStatusContent({ kind, contentVersion }: { kind: "progress" 
 
   useEffect(() => {
     let active = true;
+    const epoch = accountEpochRef.current;
     getVisibleStudySnapshot().then((value) => {
-      if (!active) return;
+      if (!active || epoch !== accountEpochRef.current) return;
       setSnapshot(value);
       setState("ready");
-    }).catch(() => { if (active) setState("error"); });
+    }).catch(() => { if (active && epoch === accountEpochRef.current) setState("error"); });
     return () => { active = false; };
   }, [attemptNo]);
 
