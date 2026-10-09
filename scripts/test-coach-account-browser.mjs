@@ -270,6 +270,7 @@ try {
   const initialStatusResponse = await fetch(`${origin}/api/site-account`, { cache: "no-store" });
   const initialStatus = await initialStatusResponse.json();
   assert.deepEqual(initialStatus.providers, { github: false, google: false }, "unconfigured OAuth providers stay disabled");
+  assert.deepEqual(initialStatus.linkedProviders, [], "a signed-out browser exposes no linked provider identities");
   assert.equal(initialStatus.authConfigured, false, "real OAuth is not configured for this fixture");
   assert.equal(initialStatus.account, null, "the temporary browser starts signed out");
   assert.equal(initialStatus.mockAuthEnabled, true, "mock login is available only for this local test server");
@@ -334,6 +335,9 @@ try {
     window.__legacyFakeOAuth = true;
     window.__legacyImportCalls = 0;
     window.__legacyImportExpectedAccount = null;
+    window.__linkProviderCalls = 0;
+    window.__linkProviderExpectedAccount = null;
+    window.__linkProviderBody = null;
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' ? input : input.url, location.origin);
       const method = init.method ?? 'GET';
@@ -342,8 +346,16 @@ try {
         const data = await response.json();
         if (data.account && window.__legacyFakeOAuth) {
           data.account = { ...data.account, id: window.__legacyFakeAccountId, authMethod: 'oauth', email: window.__legacyFakeAccountId === 'mock-user-a' ? 'preview-a@example.test' : 'preview-b@example.test' };
+          data.providers = { github: true, google: true };
+          data.linkedProviders = ['github'];
         }
         return new Response(JSON.stringify(data), { status: response.status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
+      }
+      if (url.pathname === '/api/auth/link-social' && method === 'POST') {
+        window.__linkProviderCalls += 1;
+        window.__linkProviderExpectedAccount = new Headers(init.headers).get('x-frontend-atlas-account-id');
+        window.__linkProviderBody = JSON.parse(init.body);
+        return new Response(JSON.stringify({ redirect: false }), { status: 200, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' } });
       }
       if (url.pathname === '/api/coach/conversations/legacy-import' && method === 'POST') {
         window.__legacyImportCalls += 1;
@@ -354,6 +366,16 @@ try {
   })()`);
   await browser.evaluate("document.querySelector('[data-testid=refresh-session-list]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=legacy-import-preview-button]') !== null")), "the OAuth-only import panel for local-preview testing");
+  assert.equal(await browser.evaluate("document.querySelector('[data-testid=linked-provider-github]') !== null"), true, "the current account shows its linked provider without exposing tokens");
+  await browser.evaluate("document.querySelector('[data-testid=link-provider-google]').click()");
+  await waitFor(() => browser.evaluate(shellReadyExpression("window.__linkProviderCalls === 1 && document.body.innerText.includes('没有返回绑定授权地址')")), "explicit second-provider link request");
+  assert.equal(await browser.evaluate("window.__linkProviderExpectedAccount"), "mock-user-a", "the provider-link request is bound to the displayed account id");
+  assert.deepEqual(await browser.evaluate("window.__linkProviderBody"), {
+    provider: "google",
+    callbackURL: "/coach/sessions/?accountLink=success",
+    errorCallbackURL: "/coach/sessions/?accountLink=failed",
+    disableRedirect: true,
+  }, "the provider-link request uses fixed same-origin callbacks and no client token or account id");
   await browser.evaluate("document.querySelector('[data-testid=legacy-import-preview-button]').click()");
   await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=legacy-import-preview]')?.innerText.includes('UNLISTED-QID-EXACT')")), "a local-only preview of the old conversation");
   const localPreviewText = await browser.evaluate("document.querySelector('[data-testid=legacy-import-preview]').innerText");

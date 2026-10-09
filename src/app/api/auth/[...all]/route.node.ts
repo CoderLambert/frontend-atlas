@@ -17,7 +17,8 @@ export function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  if (handlers && new URL(request.url).pathname.replace(/\/+$/u, "") === "/api/auth/sign-out") {
+  const pathname = new URL(request.url).pathname.replace(/\/+$/u, "");
+  if (handlers && (pathname === "/api/auth/sign-out" || pathname === "/api/auth/link-social")) {
     const expectedAccountId = request.headers.get("x-frontend-atlas-account-id");
     if (!expectedAccountId || expectedAccountId !== await authSessionReader.getUserId(request)) {
       return Response.json({ error: "account_changed" }, { status: 409, headers: { "cache-control": "no-store" } });
