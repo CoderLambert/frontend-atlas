@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { BookOpen, Clock3, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { getStudySnapshot, type Attempt, type StudySnapshot } from "@/lib/study-store";
+import { getVisibleStudySnapshot, subscribeToStudyAccountChanges, type Attempt, type StudySnapshot } from "@/lib/study-store";
 
 type LoadState = "loading" | "ready" | "error";
 
@@ -26,9 +26,15 @@ export function StudyStatusContent({ kind, contentVersion }: { kind: "progress" 
   const [snapshot, setSnapshot] = useState<StudySnapshot | null>(null);
   const [attemptNo, setAttemptNo] = useState(0);
 
+  useEffect(() => subscribeToStudyAccountChanges(() => {
+    setSnapshot(null);
+    setState("loading");
+    setAttemptNo((value) => value + 1);
+  }), []);
+
   useEffect(() => {
     let active = true;
-    getStudySnapshot().then((value) => {
+    getVisibleStudySnapshot().then((value) => {
       if (!active) return;
       setSnapshot(value);
       setState("ready");
