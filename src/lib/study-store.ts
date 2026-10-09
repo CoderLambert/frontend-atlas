@@ -13,6 +13,8 @@ export type Assessment = {
 export type Attempt = {
   attemptId: string;
   qid: string;
+  /** Optional for legacy device-only records; never infer an owner retroactively. */
+  ownerUserId?: string;
   contentVersion: string;
   startedAt: string;
   originalAnswer: string;
