@@ -111,16 +111,30 @@ async function setSessionCookie(browser, origin, token) {
   assert.equal(result.success, true);
 }
 
+async function decideViaApi(origin, token, reviewerUserId, proposalId, input) {
+  return fetch(`${origin}/api/reviewer/proposals/${encodeURIComponent(proposalId)}`, {
+    method: "POST",
+    headers: {
+      cookie: `better-auth.session_token=${signedSessionCookie(token)}`,
+      origin,
+      "content-type": "application/json",
+      "x-frontend-atlas-account-id": reviewerUserId,
+      "x-frontend-atlas-request": "1",
+    },
+    body: JSON.stringify(input),
+  });
+}
+
 function setValue(selector, value) {
   return `(() => { const element = document.querySelector(${JSON.stringify(selector)}); if (!element) throw new Error('missing ${selector}'); const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')?.set; setter.call(element, ${JSON.stringify(value)}); element.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`;
 }
 
-function auditRow() {
+function auditRow(proposalId = "browser-proposal") {
   const opened = openSqliteDatabase(databasePath);
   try {
     return {
-      proposal: opened.client.prepare("SELECT status FROM question_change_proposals WHERE id = 'browser-proposal'").get(),
-      review: opened.client.prepare("SELECT reviewer_user_id, decision, comment FROM question_proposal_reviews WHERE proposal_id = 'browser-proposal'").get(),
+      proposal: opened.client.prepare("SELECT status FROM question_change_proposals WHERE id = ?").get(proposalId),
+      review: opened.client.prepare("SELECT reviewer_user_id, decision, comment FROM question_proposal_reviews WHERE proposal_id = ?").get(proposalId),
     };
   } finally {
     opened.client.close();
@@ -140,6 +154,8 @@ try {
   const insertUser = opened.client.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)");
   insertUser.run("browser-owner", "Browser Owner", "owner@example.test", now, now);
   insertUser.run("browser-owner-delayed", "Delayed Browser Owner", "delayed-owner@example.test", now, now);
+  insertUser.run("browser-owner-race-a", "Race Owner A", "race-owner-a@example.test", now, now);
+  insertUser.run("browser-owner-race-b", "Race Owner B", "race-owner-b@example.test", now, now);
   insertUser.run("browser-reviewer", "Browser Reviewer", "reviewer@example.test", now, now);
   insertUser.run("browser-reviewer-b", "Browser Reviewer B", "reviewer-b@example.test", now, now);
   insertUser.run("browser-normal", "Browser Normal", "normal@example.test", now, now);
@@ -164,7 +180,17 @@ try {
   insertProposal.run(
     "browser-proposal-delayed", "browser-owner-delayed", "D13", "browser-generation-delayed", 2, chapters.content_version,
     baselineHash, "Browser 延迟详情题干", "## Browser 延迟详情\n\n用于复现初始详情竞态。", '["延迟检查点"]',
-    "Browser 延迟详情摘要", now + 1_000, now + 1_000,
+    "Browser 延迟详情摘要", now + 3_000, now + 3_000,
+  );
+  insertProposal.run(
+    "browser-race-a", "browser-owner-race-a", "D13", "browser-race-a-generation", 5, chapters.content_version,
+    baselineHash, "Browser 竞态 A 题干", "## Browser 竞态 A\n\n确认期间被其他 reviewer 处理。", '["竞态 A 检查点"]',
+    "Browser 竞态 A 摘要", now + 4_000, now + 4_000,
+  );
+  insertProposal.run(
+    "browser-race-b", "browser-owner-race-b", "D13", "browser-race-b-generation", 6, chapters.content_version,
+    baselineHash, "Browser 竞态 B 题干", "## Browser 竞态 B\n\n不得接收为 A 准备的决定。", '["竞态 B 检查点"]',
+    "Browser 竞态 B 摘要", now + 5_000, now + 5_000,
   );
   opened.client.close();
 
@@ -204,9 +230,15 @@ try {
   await browser.command("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
     const nativeFetch = window.fetch.bind(window);
     let delayed = false;
+    window.__delayNextReviewerList = false;
     window.fetch = (input, init) => {
       const url = typeof input === "string" ? input : input.url;
       const method = init?.method ?? (typeof input === "string" ? "GET" : input.method);
+      const pathname = new URL(url, window.location.href).pathname;
+      if (window.__delayNextReviewerList && method === "GET" && pathname === "/api/reviewer/proposals") {
+        window.__delayNextReviewerList = false;
+        return new Promise((resolve, reject) => setTimeout(() => nativeFetch(input, init).then(resolve, reject), 3_000));
+      }
       if (!delayed && method === "GET" && url.includes("/api/reviewer/proposals/browser-proposal-delayed")) {
         delayed = true;
         return new Promise((resolve, reject) => setTimeout(() => nativeFetch(input, init).then(resolve, reject), 1_200));
@@ -216,7 +248,8 @@ try {
   })();` });
   await browser.command("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("document.querySelector('.reviewer-dashboard') !== null"), "reviewer dashboard");
-  await waitFor(() => browser.evaluate("document.body.innerText.includes('Browser 延迟详情题干') && document.body.innerText.includes('Browser 审核后的 D13 题干')"), "review queue");
+  await waitFor(() => browser.evaluate("document.body.innerText.includes('Browser 延迟详情题干') && document.body.innerText.includes('Browser 审核后的 D13 题干') && document.body.innerText.includes('Browser 竞态 A 题干') && document.body.innerText.includes('Browser 竞态 B 题干')"), "review queue");
+  await browser.evaluate("Array.from(document.querySelectorAll('.reviewer-queue li button')).find((button) => button.textContent.includes('Browser 延迟详情题干')).click()");
   await browser.evaluate("Array.from(document.querySelectorAll('.reviewer-queue li button')).find((button) => button.textContent.includes('Browser 审核后的 D13 题干')).click()");
   await waitFor(() => browser.evaluate("document.body.innerText.includes('Browser 审核后的 D13 题干') && document.body.innerText.includes('Browser 端到端审核摘要')"), "trusted proposal detail");
   await delay(1_400);
@@ -234,14 +267,45 @@ try {
     proposal: { status: "submitted" },
     review: undefined,
   }, "switching the cookie cannot attribute reviewer A's old confirmation to reviewer B");
+  await waitFor(() => browser.evaluate("document.querySelector('#review-comment') === null"), "account-switched confirmation invalidation");
   await setSessionCookie(browser, origin, "reviewer-token");
+  await browser.evaluate("Array.from(document.querySelectorAll('.reviewer-actions button')).find((button) => button.textContent.includes('批准')).click()");
+  await waitFor(() => browser.evaluate("document.querySelector('#review-comment') !== null"), "fresh reviewer confirmation");
+  await browser.evaluate(setValue("#review-comment", "Browser reviewer 已核对题干、Markdown 与检查点。"));
   await browser.evaluate("document.querySelector('[data-slot=alert-dialog-action]').click()");
   await waitFor(() => auditRow().proposal.status === "approved", "approval audit");
   assert.deepEqual(auditRow(), {
     proposal: { status: "approved" },
     review: { reviewer_user_id: "browser-reviewer", decision: "approved", comment: "Browser reviewer 已核对题干、Markdown 与检查点。" },
   });
-  await waitFor(() => browser.evaluate("document.querySelectorAll('.reviewer-queue li button').length === 1 && document.body.innerText.includes('Browser 延迟详情题干')"), "approved proposal leaves queue");
+  await waitFor(() => browser.evaluate("document.querySelectorAll('.reviewer-queue li button').length === 3 && document.body.innerText.includes('Browser 延迟详情题干')"), "approved proposal leaves queue");
+
+  await browser.evaluate("Array.from(document.querySelectorAll('.reviewer-queue li button')).find((button) => button.textContent.includes('Browser 竞态 A 题干')).click()");
+  await waitFor(() => browser.evaluate("document.body.innerText.includes('Browser 竞态 A 摘要')"), "race proposal A detail");
+  await browser.evaluate("window.__delayNextReviewerList = true; Array.from(document.querySelectorAll('.page-intro button')).find((button) => button.textContent.includes('刷新')).click()");
+  await waitFor(() => browser.evaluate("Array.from(document.querySelectorAll('.page-intro button')).find((button) => button.textContent.includes('刷新'))?.disabled"), "delayed refresh start");
+  await browser.evaluate("Array.from(document.querySelectorAll('.reviewer-actions button')).find((button) => button.textContent.includes('批准')).click()");
+  await waitFor(() => browser.evaluate("document.querySelector('#review-comment') !== null"), "race proposal A confirmation");
+  await browser.evaluate(setValue("#review-comment", "只为竞态 A 准备的审核说明。"));
+  const competingDecision = await decideViaApi(origin, "reviewer-b-token", "browser-reviewer-b", "browser-race-a", {
+    decision: "approved",
+    comment: "Reviewer B 已先完成竞态 A。",
+    expectedSourceGenerationId: "browser-race-a-generation",
+    expectedSourceOverrideVersion: 5,
+  });
+  assert.equal(competingDecision.status, 201);
+  await browser.evaluate("document.querySelector('[data-slot=alert-dialog-action]').click()");
+  await waitFor(() => browser.evaluate("document.body.innerText.includes('该提案已被撤回或由另一位 reviewer 完成处理')"), "race proposal A terminal conflict");
+  await waitFor(() => browser.evaluate("document.querySelector('.reviewer-queue button.is-active')?.textContent.includes('Browser 竞态 B 题干')"), "delayed refresh selects proposal B");
+  await waitFor(() => browser.evaluate("document.querySelector('#review-comment') === null"), "stale proposal A confirmation invalidation");
+  assert.deepEqual(auditRow("browser-race-a"), {
+    proposal: { status: "approved" },
+    review: { reviewer_user_id: "browser-reviewer-b", decision: "approved", comment: "Reviewer B 已先完成竞态 A。" },
+  });
+  assert.deepEqual(auditRow("browser-race-b"), {
+    proposal: { status: "submitted" },
+    review: undefined,
+  }, "proposal B never receives proposal A's frozen decision or comment");
 
   await setSessionCookie(browser, origin, "owner-token");
   await browser.command("Page.navigate", { url: `${origin}/questions/D13/` });

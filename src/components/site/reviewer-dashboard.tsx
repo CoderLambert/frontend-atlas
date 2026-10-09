@@ -33,6 +33,7 @@ type ProposalDetail = {
   proposal: ReviewListItem & {
     ownerUserId: string;
     sourceGenerationId: string;
+    baseContentSha256: string | null;
     checkpoints: string[];
     explanationMarkdown: string;
     status: "submitted" | "withdrawn" | "approved" | "rejected" | "published";
@@ -49,6 +50,20 @@ type ProposalDetail = {
 };
 
 type Decision = "approved" | "rejected";
+
+type DecisionConfirmation = {
+  decision: Decision;
+  reviewerUserId: string;
+  proposalId: string;
+  qid: string;
+  title: string;
+  sourceGenerationId: string;
+  sourceOverrideVersion: number;
+  proposalBaseContentVersion: string;
+  proposalBaseContentSha256: string | null;
+  baselineContentVersion: string;
+  baselineSha256: string;
+};
 
 async function readJson(response: Response) {
   return response.json().catch(() => null) as Promise<Record<string, unknown> | null>;
@@ -82,6 +97,19 @@ function statusError(data: Record<string, unknown> | null) {
   return "审核操作失败，请刷新后核对当前状态。";
 }
 
+function confirmationMatchesDetail(confirmation: DecisionConfirmation, reviewerUserId: string, detail: ProposalDetail) {
+  return confirmation.reviewerUserId === reviewerUserId
+    && confirmation.proposalId === detail.proposal.id
+    && confirmation.sourceGenerationId === detail.proposal.sourceGenerationId
+    && confirmation.sourceOverrideVersion === detail.proposal.sourceOverrideVersion
+    && confirmation.proposalBaseContentVersion === detail.proposal.baseContentVersion
+    && confirmation.proposalBaseContentSha256 === detail.proposal.baseContentSha256
+    && confirmation.baselineContentVersion === detail.baseline.contentVersion
+    && confirmation.baselineSha256 === detail.baseline.sha256
+    && detail.proposal.status === "submitted"
+    && detail.conflict === null;
+}
+
 export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }) {
   const [items, setItems] = useState<ReviewListItem[]>([]);
   const [detail, setDetail] = useState<ProposalDetail | null>(null);
@@ -89,11 +117,12 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
-  const [decision, setDecision] = useState<Decision | null>(null);
+  const [confirmation, setConfirmation] = useState<DecisionConfirmation | null>(null);
   const [comment, setComment] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const selectedIdRef = useRef<string | null>(null);
+  const confirmationRef = useRef<DecisionConfirmation | null>(null);
   const listEpoch = useRef(0);
   const detailEpoch = useRef(0);
   const mutationEpoch = useRef(0);
@@ -101,7 +130,14 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
   const detailRequest = useRef<AbortController | null>(null);
   const mutationRequest = useRef<AbortController | null>(null);
 
+  const clearConfirmation = useCallback(() => {
+    confirmationRef.current = null;
+    setConfirmation(null);
+    setComment("");
+  }, []);
+
   const loadDetail = useCallback(async (proposalId: string) => {
+    if (confirmationRef.current && confirmationRef.current.proposalId !== proposalId) clearConfirmation();
     detailRequest.current?.abort();
     const controller = new AbortController();
     detailRequest.current = controller;
@@ -117,14 +153,21 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
       });
       const data = await readJson(response);
       if (controller.signal.aborted || detailEpoch.current !== epoch) return;
-      if (!response.ok) throw new Error(statusError(data));
-      setDetail(data as unknown as ProposalDetail);
+      if (!response.ok) {
+        clearConfirmation();
+        throw new Error(statusError(data));
+      }
+      const nextDetail = data as unknown as ProposalDetail;
+      if (confirmationRef.current && !confirmationMatchesDetail(confirmationRef.current, reviewerUserId, nextDetail)) {
+        clearConfirmation();
+      }
+      setDetail(nextDetail);
     } catch (cause) {
       if (!controller.signal.aborted && detailEpoch.current === epoch) setError(cause instanceof Error ? cause.message : "无法读取提案详情。");
     } finally {
       if (!controller.signal.aborted && detailEpoch.current === epoch) setDetailLoading(false);
     }
-  }, [reviewerUserId]);
+  }, [clearConfirmation, reviewerUserId]);
 
   const loadList = useCallback(async (append: boolean, cursor?: string | null) => {
     listRequest.current?.abort();
@@ -142,7 +185,12 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
         headers: { [expectedAccountHeaderName]: reviewerUserId },
       });
       const data = await readJson(response);
-      if (!response.ok) throw new Error(statusError(data));
+      if (!response.ok) {
+        if (data?.error === "account_changed" || data?.error === "forbidden" || data?.error === "unauthorized") {
+          clearConfirmation();
+        }
+        throw new Error(statusError(data));
+      }
       if (controller.signal.aborted || listEpoch.current !== epoch) return;
       const proposals = (data?.proposals ?? []) as ReviewListItem[];
       setItems((current) => append ? [...current, ...proposals] : proposals);
@@ -152,6 +200,14 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
           ? selectedIdRef.current
           : null;
         const initialId = retainedId ?? proposals[0]?.id ?? null;
+        const initialProposal = initialId ? proposals.find((proposal) => proposal.id === initialId) ?? null : null;
+        const pendingConfirmation = confirmationRef.current;
+        if (pendingConfirmation && (!initialProposal
+          || pendingConfirmation.proposalId !== initialProposal.id
+          || pendingConfirmation.sourceOverrideVersion !== initialProposal.sourceOverrideVersion
+          || pendingConfirmation.proposalBaseContentVersion !== initialProposal.baseContentVersion)) {
+          clearConfirmation();
+        }
         selectedIdRef.current = initialId;
         setSelectedId(initialId);
         setDetail(null);
@@ -167,7 +223,7 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
     } finally {
       if (!controller.signal.aborted && listEpoch.current === epoch) setLoading(false);
     }
-  }, [loadDetail, reviewerUserId]);
+  }, [clearConfirmation, loadDetail, reviewerUserId]);
 
   useEffect(() => {
     void Promise.resolve().then(() => loadList(false));
@@ -194,7 +250,7 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
       setDetail(null);
       setSelectedId(null);
       setNextCursor(null);
-      setDecision(null);
+      clearConfirmation();
       setSaving(false);
       setDetailLoading(false);
       void loadList(false);
@@ -208,9 +264,10 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
       mutationRequest.current?.abort();
       channel.close();
     };
-  }, [loadList]);
+  }, [clearConfirmation, loadList]);
 
   function selectProposal(proposalId: string) {
+    clearConfirmation();
     selectedIdRef.current = proposalId;
     setSelectedId(proposalId);
     setDetail(null);
@@ -218,7 +275,12 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
   }
 
   async function submitDecision() {
-    if (!detail || !decision || saving) return;
+    if (!confirmation || saving) return;
+    if (confirmation.reviewerUserId !== reviewerUserId) {
+      clearConfirmation();
+      setError("账号已切换；旧页面请求已拒绝，请重新加载后再审核。");
+      return;
+    }
     const trimmed = comment.trim();
     if (!trimmed) {
       setError("请填写审核说明，作为不可变审核记录的一部分。");
@@ -231,7 +293,7 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
     setSaving(true);
     setError("");
     try {
-      const response = await fetch(`/api/reviewer/proposals/${encodeURIComponent(detail.proposal.id)}`, {
+      const response = await fetch(`/api/reviewer/proposals/${encodeURIComponent(confirmation.proposalId)}`, {
         method: "POST",
         credentials: "same-origin",
         cache: "no-store",
@@ -239,20 +301,22 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
         headers: {
           "content-type": "application/json",
           "x-frontend-atlas-request": "1",
-          [expectedAccountHeaderName]: reviewerUserId,
+          [expectedAccountHeaderName]: confirmation.reviewerUserId,
         },
         body: JSON.stringify({
-          decision,
+          decision: confirmation.decision,
           comment: trimmed,
-          expectedSourceGenerationId: detail.proposal.sourceGenerationId,
-          expectedSourceOverrideVersion: detail.proposal.sourceOverrideVersion,
+          expectedSourceGenerationId: confirmation.sourceGenerationId,
+          expectedSourceOverrideVersion: confirmation.sourceOverrideVersion,
         }),
       });
       const data = await readJson(response);
       if (controller.signal.aborted || mutationEpoch.current !== epoch) return;
-      if (!response.ok) throw new Error(statusError(data));
-      setDecision(null);
-      setComment("");
+      if (!response.ok) {
+        clearConfirmation();
+        throw new Error(statusError(data));
+      }
+      clearConfirmation();
       setSaving(false);
       await loadList(false);
     } catch (cause) {
@@ -265,6 +329,26 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
   }
 
   const canDecide = detail?.proposal.status === "submitted" && !detail.conflict;
+
+  function beginDecision(decision: Decision) {
+    if (!detail || !canDecide) return;
+    const nextConfirmation: DecisionConfirmation = {
+      decision,
+      reviewerUserId,
+      proposalId: detail.proposal.id,
+      qid: detail.proposal.qid,
+      title: detail.proposal.title,
+      sourceGenerationId: detail.proposal.sourceGenerationId,
+      sourceOverrideVersion: detail.proposal.sourceOverrideVersion,
+      proposalBaseContentVersion: detail.proposal.baseContentVersion,
+      proposalBaseContentSha256: detail.proposal.baseContentSha256,
+      baselineContentVersion: detail.baseline.contentVersion,
+      baselineSha256: detail.baseline.sha256,
+    };
+    confirmationRef.current = nextConfirmation;
+    setConfirmation(nextConfirmation);
+    setComment("");
+  }
 
   return (
     <div className="reviewer-dashboard">
@@ -328,18 +412,18 @@ export function ReviewerDashboard({ reviewerUserId }: { reviewerUserId: string }
               </Card>
               <Card className="reviewer-actions">
                 <p>批准只写入审核审计；公共题库仍需 operator CLI 生成独立 Git commit，并在合并后 reconcile。</p>
-                <div><Button type="button" onClick={() => { setComment(""); setDecision("approved"); }} disabled={!canDecide}><Check aria-hidden="true" />批准</Button><Button type="button" variant="destructive" onClick={() => { setComment(""); setDecision("rejected"); }} disabled={!canDecide}><X aria-hidden="true" />拒绝</Button></div>
+                <div><Button type="button" onClick={() => beginDecision("approved")} disabled={!canDecide}><Check aria-hidden="true" />批准</Button><Button type="button" variant="destructive" onClick={() => beginDecision("rejected")} disabled={!canDecide}><X aria-hidden="true" />拒绝</Button></div>
               </Card>
             </>
           )}
         </div>
       </div>
 
-      <AlertDialog open={decision !== null} onOpenChange={(open) => { if (!open && !saving) setDecision(null); }}>
+      <AlertDialog open={confirmation !== null} onOpenChange={(open) => { if (!open && !saving) clearConfirmation(); }}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>{decision === "approved" ? "批准这份提案？" : "拒绝这份提案？"}</AlertDialogTitle><AlertDialogDescription>决定会绑定当前 reviewer、提案源版本、公共基线哈希和时间，写入后不可更改。</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogHeader><AlertDialogTitle>{confirmation?.decision === "approved" ? "批准这份提案？" : "拒绝这份提案？"}</AlertDialogTitle><AlertDialogDescription>{confirmation ? `${confirmation.qid} · ${confirmation.title}；` : ""}决定会绑定当前 reviewer、提案源版本、公共基线哈希和时间，写入后不可更改。</AlertDialogDescription></AlertDialogHeader>
           <div><Label className="field-label" htmlFor="review-comment">审核说明</Label><Textarea id="review-comment" value={comment} onChange={(event) => setComment(event.target.value)} maxLength={4_000} rows={6} /></div>
-          <AlertDialogFooter><AlertDialogCancel disabled={saving}>取消</AlertDialogCancel><AlertDialogAction variant={decision === "rejected" ? "destructive" : "default"} disabled={saving} onClick={(event) => { event.preventDefault(); void submitDecision(); }}>{saving ? "正在写入…" : "确认并写入审计"}</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogFooter><AlertDialogCancel disabled={saving}>取消</AlertDialogCancel><AlertDialogAction variant={confirmation?.decision === "rejected" ? "destructive" : "default"} disabled={saving} onClick={(event) => { event.preventDefault(); void submitDecision(); }}>{saving ? "正在写入…" : "确认并写入审计"}</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>
