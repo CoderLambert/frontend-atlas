@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type * as schema from "../db/schema.ts";
-import { questionChangeProposals, questionPrivateOverrides } from "../db/schema.ts";
+import { questionChangeProposals, questionChangeProposalSources, questionPrivateOverrides } from "../db/schema.ts";
 import type { SessionReader } from "./auth-session.ts";
 import { createWriteRequestGuard } from "./coach/write-request-guard.ts";
 
@@ -17,15 +17,21 @@ type SubmitInput = {
   summary: string;
 };
 
-function isSourceSnapshotUniqueViolation(cause: unknown) {
+function isSourceClaimUniqueViolation(cause: unknown) {
   if (!cause || typeof cause !== "object") return false;
   const error = cause as { code?: unknown; message?: unknown };
-  return error.code === "SQLITE_CONSTRAINT_UNIQUE"
+  return (error.code === "SQLITE_CONSTRAINT_UNIQUE" || error.code === "SQLITE_CONSTRAINT_PRIMARYKEY")
     && typeof error.message === "string"
-    && error.message.includes("question_change_proposals.owner_user_id")
-    && error.message.includes("question_change_proposals.qid")
-    && error.message.includes("question_change_proposals.source_generation_id")
-    && error.message.includes("question_change_proposals.source_override_version");
+    && error.message.includes("question_change_proposal_sources.owner_user_id")
+    && error.message.includes("question_change_proposal_sources.qid")
+    && error.message.includes("question_change_proposal_sources.source_generation_id")
+    && error.message.includes("question_change_proposal_sources.source_override_version");
+}
+
+function isSqliteBusy(cause: unknown) {
+  if (!cause || typeof cause !== "object") return false;
+  const code = (cause as { code?: unknown }).code;
+  return typeof code === "string" && (code === "SQLITE_BUSY" || code === "SQLITE_BUSY_SNAPSHOT");
 }
 
 export class QuestionChangeProposalRepository {
@@ -44,67 +50,93 @@ export class QuestionChangeProposalRepository {
   }
 
   submit(ownerUserId: string, qid: string, input: SubmitInput) {
-    try {
-      return this.database.transaction((transaction) => {
-        const priorSource = transaction.select().from(questionChangeProposals).where(and(
-          eq(questionChangeProposals.ownerUserId, ownerUserId),
-          eq(questionChangeProposals.qid, qid),
-          eq(questionChangeProposals.sourceGenerationId, input.expectedGenerationId),
-          eq(questionChangeProposals.sourceOverrideVersion, input.expectedVersion),
-        )).limit(1).all()[0] ?? null;
+    const readClaimedProposal = () => {
+      const claim = this.database.select().from(questionChangeProposalSources).where(and(
+        eq(questionChangeProposalSources.ownerUserId, ownerUserId),
+        eq(questionChangeProposalSources.qid, qid),
+        eq(questionChangeProposalSources.sourceGenerationId, input.expectedGenerationId),
+        eq(questionChangeProposalSources.sourceOverrideVersion, input.expectedVersion),
+      )).limit(1).all()[0] ?? null;
+      if (!claim) return null;
+      return this.database.select().from(questionChangeProposals).where(
+        eq(questionChangeProposals.id, claim.proposalId),
+      ).limit(1).all()[0] ?? null;
+    };
+
+    const retryLimit = 3;
+    for (let attempt = 0; attempt < retryLimit; attempt += 1) {
+      try {
+        return this.database.transaction((transaction) => {
+          const claim = transaction.select().from(questionChangeProposalSources).where(and(
+            eq(questionChangeProposalSources.ownerUserId, ownerUserId),
+            eq(questionChangeProposalSources.qid, qid),
+            eq(questionChangeProposalSources.sourceGenerationId, input.expectedGenerationId),
+            eq(questionChangeProposalSources.sourceOverrideVersion, input.expectedVersion),
+          )).limit(1).all()[0] ?? null;
+          if (claim) {
+            const priorSource = transaction.select().from(questionChangeProposals).where(
+              eq(questionChangeProposals.id, claim.proposalId),
+            ).limit(1).all()[0];
+            if (!priorSource) throw new Error(`Proposal source claim ${claim.proposalId} has no audit row.`);
+            return priorSource.status === "submitted"
+              ? { kind: "already-submitted" as const, value: priorSource }
+              : { kind: "withdrawn-source" as const, value: priorSource };
+          }
+
+          const active = transaction.select().from(questionChangeProposals).where(and(
+            eq(questionChangeProposals.ownerUserId, ownerUserId),
+            eq(questionChangeProposals.qid, qid),
+            eq(questionChangeProposals.status, "submitted"),
+          )).orderBy(desc(questionChangeProposals.createdAt)).limit(1).all()[0] ?? null;
+          if (active) return { kind: "active-conflict" as const, current: active };
+
+          const source = transaction.select().from(questionPrivateOverrides).where(and(
+            eq(questionPrivateOverrides.ownerUserId, ownerUserId),
+            eq(questionPrivateOverrides.qid, qid),
+          )).limit(1).all()[0] ?? null;
+          if (!source) return { kind: "override-required" as const };
+          if (source.generationId !== input.expectedGenerationId || source.version !== input.expectedVersion) {
+            return { kind: "override-conflict" as const, current: source };
+          }
+
+          const now = new Date();
+          const created = transaction.insert(questionChangeProposals).values({
+            id: randomUUID(),
+            ownerUserId,
+            qid,
+            sourceGenerationId: source.generationId,
+            sourceOverrideVersion: source.version,
+            baseContentVersion: source.baseContentVersion,
+            title: source.title,
+            explanationMarkdown: source.explanationMarkdown,
+            checkpointsJson: source.checkpointsJson,
+            summary: input.summary,
+            status: "submitted",
+            createdAt: now,
+            updatedAt: now,
+          }).returning().get();
+          transaction.insert(questionChangeProposalSources).values({
+            ownerUserId,
+            qid,
+            sourceGenerationId: source.generationId,
+            sourceOverrideVersion: source.version,
+            proposalId: created.id,
+            claimedAt: now,
+          }).run();
+          return { kind: "submitted" as const, value: created };
+        }, { behavior: "immediate" });
+      } catch (cause) {
+        if (!isSourceClaimUniqueViolation(cause) && !isSqliteBusy(cause)) throw cause;
+        const priorSource = readClaimedProposal();
         if (priorSource) {
           return priorSource.status === "submitted"
             ? { kind: "already-submitted" as const, value: priorSource }
             : { kind: "withdrawn-source" as const, value: priorSource };
         }
-
-        const active = transaction.select().from(questionChangeProposals).where(and(
-          eq(questionChangeProposals.ownerUserId, ownerUserId),
-          eq(questionChangeProposals.qid, qid),
-          eq(questionChangeProposals.status, "submitted"),
-        )).orderBy(desc(questionChangeProposals.createdAt)).limit(1).all()[0] ?? null;
-        if (active) return { kind: "active-conflict" as const, current: active };
-
-        const source = transaction.select().from(questionPrivateOverrides).where(and(
-          eq(questionPrivateOverrides.ownerUserId, ownerUserId),
-          eq(questionPrivateOverrides.qid, qid),
-        )).limit(1).all()[0] ?? null;
-        if (!source) return { kind: "override-required" as const };
-        if (source.generationId !== input.expectedGenerationId || source.version !== input.expectedVersion) {
-          return { kind: "override-conflict" as const, current: source };
-        }
-
-        const now = new Date();
-        const created = transaction.insert(questionChangeProposals).values({
-          id: randomUUID(),
-          ownerUserId,
-          qid,
-          sourceGenerationId: source.generationId,
-          sourceOverrideVersion: source.version,
-          baseContentVersion: source.baseContentVersion,
-          title: source.title,
-          explanationMarkdown: source.explanationMarkdown,
-          checkpointsJson: source.checkpointsJson,
-          summary: input.summary,
-          status: "submitted",
-          createdAt: now,
-          updatedAt: now,
-        }).returning().get();
-        return { kind: "submitted" as const, value: created };
-      });
-    } catch (cause) {
-      if (!isSourceSnapshotUniqueViolation(cause)) throw cause;
-      const priorSource = this.database.select().from(questionChangeProposals).where(and(
-        eq(questionChangeProposals.ownerUserId, ownerUserId),
-        eq(questionChangeProposals.qid, qid),
-        eq(questionChangeProposals.sourceGenerationId, input.expectedGenerationId),
-        eq(questionChangeProposals.sourceOverrideVersion, input.expectedVersion),
-      )).limit(1).all()[0] ?? null;
-      if (!priorSource) throw cause;
-      return priorSource.status === "submitted"
-        ? { kind: "already-submitted" as const, value: priorSource }
-        : { kind: "withdrawn-source" as const, value: priorSource };
+        if (attempt === retryLimit - 1) throw cause;
+      }
     }
+    throw new Error("Proposal submission retry loop ended unexpectedly.");
   }
 
   withdraw(ownerUserId: string, qid: string, proposalId: string) {

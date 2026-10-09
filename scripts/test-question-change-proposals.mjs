@@ -3,6 +3,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import { openSqliteDatabase } from "../src/lib/db/sqlite.ts";
 import { user } from "../src/lib/db/schema.ts";
@@ -55,6 +56,38 @@ function submitInput(source, summary = "修正题干并补充边界说明。") {
   };
 }
 
+function createProposalWorker(workerData) {
+  const worker = new Worker(new URL("./question-change-proposal-worker.mjs", import.meta.url), { workerData });
+  let resolveReady;
+  let resolveResult;
+  let rejectReady;
+  let rejectResult;
+  const ready = new Promise((resolve, rejectPromise) => {
+    resolveReady = resolve;
+    rejectReady = rejectPromise;
+  });
+  const result = new Promise((resolve, rejectPromise) => {
+    resolveResult = resolve;
+    rejectResult = rejectPromise;
+  });
+  worker.on("message", (message) => {
+    if (message.type === "ready") resolveReady();
+    if (message.type === "result") resolveResult(message);
+  });
+  worker.on("error", (cause) => {
+    rejectReady(cause);
+    rejectResult(cause);
+  });
+  worker.on("exit", (code) => {
+    if (code !== 0) {
+      const cause = new Error(`Proposal worker exited with code ${code}.`);
+      rejectReady(cause);
+      rejectResult(cause);
+    }
+  });
+  return { worker, ready, result };
+}
+
 let opened = openSqliteDatabase(databasePath);
 try {
   migrate(opened.db, { migrationsFolder: join(projectRoot, "src/lib/db/migrations") });
@@ -103,14 +136,24 @@ try {
   assert.equal(response.status, 201);
   const sourceC = (await response.json()).override;
 
-  const concurrentResponses = await Promise.all([
-    proposalHandlers.submit(request("user-c", "POST", "Q1", submitInput(sourceC, "C 并发申请一")), context("Q1")),
-    proposalHandlers.submit(request("user-c", "POST", "Q1", submitInput(sourceC, "C 并发申请二")), context("Q1")),
-  ]);
-  assert.deepEqual(concurrentResponses.map((candidate) => candidate.status).sort(), [200, 201], "concurrent same-source API retries create one proposal");
-  const concurrentProposals = await Promise.all(concurrentResponses.map((candidate) => candidate.json()));
-  assert.equal(concurrentProposals[0].proposal.id, concurrentProposals[1].proposal.id);
+  const workers = Array.from({ length: 8 }, (_, index) => createProposalWorker({
+    databasePath,
+    ownerUserId: "user-c",
+    qid: "Q1",
+    input: sourceC,
+    summary: `C 独立连接并发申请 ${index + 1}`,
+  }));
+  await Promise.all(workers.map((candidate) => candidate.ready));
+  for (const candidate of workers) candidate.worker.postMessage("start");
+  const concurrentResults = await Promise.all(workers.map((candidate) => candidate.result));
+  assert.deepEqual(
+    concurrentResults.map((candidate) => candidate.status).sort(),
+    [200, 200, 200, 200, 200, 200, 200, 201],
+    "independent SQLite connections return one creation and idempotent retries without 500",
+  );
+  assert.equal(new Set(concurrentResults.map((candidate) => candidate.proposalId)).size, 1);
   assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_change_proposals WHERE owner_user_id = ?").get("user-c").n, 1);
+  assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_change_proposal_sources WHERE owner_user_id = ?").get("user-c").n, 1);
 
   response = await proposalHandlers.submit(request("user-a", "POST", "Q1", { ...submitInput(sourceA), expectedVersion: 99 }), context("Q1"));
   assert.equal(response.status, 409);
@@ -161,16 +204,12 @@ try {
   assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_change_proposals WHERE owner_user_id = ? AND status = 'submitted'").get("user-a").n, 0);
   assert.equal(opened.client.prepare("SELECT count(*) AS n FROM question_change_proposals WHERE owner_user_id = ?").get("user-a").n, 1);
   assert.throws(() => opened.client.prepare(`
-    INSERT INTO question_change_proposals (
-      id, owner_user_id, qid, source_generation_id, source_override_version,
-      base_content_version, title, explanation_markdown, checkpoints_json,
-      summary, status, created_at, updated_at, withdrawn_at
+    INSERT INTO question_change_proposal_sources (
+      owner_user_id, qid, source_generation_id, source_override_version, proposal_id, claimed_at
     )
-    SELECT 'forced-source-replay', owner_user_id, qid, source_generation_id, source_override_version,
-      base_content_version, title, explanation_markdown, checkpoints_json,
-      'forced replay', 'submitted', created_at, updated_at, NULL
+    SELECT owner_user_id, qid, source_generation_id, source_override_version, 'forced-source-replay', created_at
     FROM question_change_proposals WHERE id = ?
-  `).run(proposalA.id), /UNIQUE constraint failed: question_change_proposals\.owner_user_id.+source_override_version/u, "the database constraint closes concurrent bypasses across all statuses");
+  `).run(proposalA.id), /UNIQUE constraint failed: question_change_proposal_sources\.owner_user_id.+source_override_version/u, "the source ledger closes concurrent reclaims across all proposal statuses");
 
   response = await proposalHandlers.submit(request("user-a", "POST", "Q1", submitInput(sourceA2, "第二版重新提交")), context("Q1"));
   assert.equal(response.status, 201);
@@ -198,7 +237,7 @@ try {
   const migrations = join(projectRoot, "src/lib/db/migrations");
   mkdirSync(join(oldMigrations, "meta"), { recursive: true });
   const oldJournal = JSON.parse(readFileSync(join(migrations, "meta/_journal.json"), "utf8"));
-  oldJournal.entries = oldJournal.entries.filter((entry) => entry.idx <= 5);
+  oldJournal.entries = oldJournal.entries.filter((entry) => entry.idx <= 6);
   writeFileSync(join(oldMigrations, "meta/_journal.json"), JSON.stringify(oldJournal));
   for (const entry of oldJournal.entries) copyFileSync(join(migrations, entry.tag + ".sql"), join(oldMigrations, entry.tag + ".sql"));
   const oldDb = openSqliteDatabase(oldPath);
@@ -217,6 +256,28 @@ try {
       .run("upgrade-message", "upgrade-conversation", "upgrade-user", "upgrade-client-message", "assistant", "迁移前回复", "complete", oldTimestamp);
     oldDb.client.prepare("INSERT INTO question_private_overrides (owner_user_id, qid, base_content_version, title, explanation_markdown, checkpoints_json, generation_id, version, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run("upgrade-user", "Q1", "old-base", "迁移前题干", "# 迁移前讲解", '["迁移前检查点"]', "old-generation", 4, oldTimestamp, oldTimestamp);
+    oldDb.client.prepare(`
+      INSERT INTO question_change_proposals (
+        id, owner_user_id, qid, source_generation_id, source_override_version,
+        base_content_version, title, explanation_markdown, checkpoints_json,
+        summary, status, created_at, updated_at, withdrawn_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "upgrade-original", "upgrade-user", "Q1", "old-generation", 4,
+      "old-base", "迁移前题干", "# 迁移前讲解", '["迁移前检查点"]',
+      "原始申请", "withdrawn", oldTimestamp + 100, oldTimestamp + 200, oldTimestamp + 200,
+    );
+    oldDb.client.prepare(`
+      INSERT INTO question_change_proposals (
+        id, owner_user_id, qid, source_generation_id, source_override_version,
+        base_content_version, title, explanation_markdown, checkpoints_json,
+        summary, status, created_at, updated_at, withdrawn_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "upgrade-replay", "upgrade-user", "Q1", "old-generation", 4,
+      "old-base", "迁移前题干", "# 迁移前讲解", '["迁移前检查点"]',
+      "旧版重放", "submitted", oldTimestamp + 300, oldTimestamp + 300, null,
+    );
   } finally {
     oldDb.client.close();
   }
@@ -229,7 +290,33 @@ try {
       { title: "迁移前题干", generation_id: "old-generation", version: 4 },
       "0006 preserves existing private override data",
     );
-    assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM question_change_proposals").get().n, 0);
+    assert.deepEqual(upgraded.client.prepare("SELECT id, summary, status, created_at, updated_at, withdrawn_at FROM question_change_proposals ORDER BY created_at").all(), [
+      {
+        id: "upgrade-original", summary: "原始申请", status: "withdrawn",
+        created_at: oldTimestamp + 100, updated_at: oldTimestamp + 200, withdrawn_at: oldTimestamp + 200,
+      },
+      {
+        id: "upgrade-replay", summary: "旧版重放", status: "withdrawn",
+        created_at: oldTimestamp + 300, updated_at: oldTimestamp + 300, withdrawn_at: oldTimestamp + 300,
+      },
+    ], "0007 retains both audit rows, leaves the original untouched, and archives the invalid replay");
+    assert.deepEqual(upgraded.client.prepare("SELECT owner_user_id, qid, source_generation_id, source_override_version, proposal_id, claimed_at FROM question_change_proposal_sources").get(), {
+      owner_user_id: "upgrade-user",
+      qid: "Q1",
+      source_generation_id: "old-generation",
+      source_override_version: 4,
+      proposal_id: "upgrade-original",
+      claimed_at: oldTimestamp + 100,
+    });
+    const upgradedRepository = new QuestionChangeProposalRepository(upgraded.db);
+    const migratedReplay = upgradedRepository.submit("upgrade-user", "Q1", {
+      expectedGenerationId: "old-generation",
+      expectedVersion: 4,
+      summary: "迁移后的再次重放",
+    });
+    assert.equal(migratedReplay.kind, "withdrawn-source");
+    assert.equal(migratedReplay.value.id, "upgrade-original");
+    assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM question_change_proposals").get().n, 2);
     assert.deepEqual(upgraded.client.prepare("SELECT id, name, email FROM user WHERE id = ?").get("upgrade-user"), {
       id: "upgrade-user", name: "Upgrade", email: "upgrade@example.test",
     });
@@ -247,9 +334,74 @@ try {
       id: "upgrade-message", conversation_id: "upgrade-conversation", owner_user_id: "upgrade-user", client_message_id: "upgrade-client-message", role: "assistant", content: "迁移前回复", status: "complete",
     });
     assert.equal(upgraded.client.prepare("PRAGMA quick_check").pluck().get(), "ok");
-    assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 8);
+    assert.equal(upgraded.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 9);
   } finally {
     upgraded.client.close();
+  }
+
+  const published0007Path = join(tempRoot, "published-0007.sqlite");
+  const published0007Migrations = join(tempRoot, "published-0007-migrations");
+  mkdirSync(join(published0007Migrations, "meta"), { recursive: true });
+  const published0007Journal = JSON.parse(readFileSync(join(migrations, "meta/_journal.json"), "utf8"));
+  published0007Journal.entries = published0007Journal.entries.filter((entry) => entry.idx <= 6);
+  writeFileSync(join(published0007Migrations, "meta/_journal.json"), JSON.stringify(published0007Journal));
+  for (const entry of published0007Journal.entries) {
+    copyFileSync(join(migrations, entry.tag + ".sql"), join(published0007Migrations, entry.tag + ".sql"));
+  }
+  const publishedDb = openSqliteDatabase(published0007Path);
+  try {
+    migrate(publishedDb.db, { migrationsFolder: published0007Migrations });
+    publishedDb.client.prepare("INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)")
+      .run("published-user", "Published", "published@example.test", oldTimestamp, oldTimestamp);
+    publishedDb.client.prepare(`
+      INSERT INTO question_change_proposals (
+        id, owner_user_id, qid, source_generation_id, source_override_version,
+        base_content_version, title, explanation_markdown, checkpoints_json,
+        summary, status, created_at, updated_at, withdrawn_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      "published-proposal", "published-user", "Q1", "published-generation", 1,
+      "old-base", "已发布 0007 题干", "# 已发布 0007 讲解", "[]",
+      "已发布 0007 申请", "submitted", oldTimestamp, oldTimestamp, null,
+    );
+
+    const currentJournal = JSON.parse(readFileSync(join(migrations, "meta/_journal.json"), "utf8"));
+    const publishedEntry = currentJournal.entries.find((entry) => entry.idx === 7);
+    assert.ok(publishedEntry, "the published 0007 journal entry exists");
+    published0007Journal.entries.push(publishedEntry);
+    writeFileSync(join(published0007Migrations, "meta/_journal.json"), JSON.stringify(published0007Journal));
+    writeFileSync(
+      join(published0007Migrations, publishedEntry.tag + ".sql"),
+      "CREATE UNIQUE INDEX `question_change_proposals_owner_qid_source_unique` ON `question_change_proposals` (`owner_user_id`,`qid`,`source_generation_id`,`source_override_version`);",
+    );
+    migrate(publishedDb.db, { migrationsFolder: published0007Migrations });
+    assert.equal(
+      publishedDb.client.prepare("SELECT count(*) AS n FROM pragma_index_list('question_change_proposals') WHERE name = 'question_change_proposals_owner_qid_source_unique'").get().n,
+      1,
+      "the fixture represents the previously published 0007 index",
+    );
+
+    migrate(publishedDb.db, { migrationsFolder: migrations });
+    migrate(publishedDb.db, { migrationsFolder: migrations });
+    assert.equal(
+      publishedDb.client.prepare("SELECT count(*) AS n FROM pragma_index_list('question_change_proposals') WHERE name = 'question_change_proposals_owner_qid_source_unique'").get().n,
+      0,
+      "0008 removes the old source index after an already-installed 0007",
+    );
+    assert.deepEqual(
+      publishedDb.client.prepare("SELECT proposal_id FROM question_change_proposal_sources").get(),
+      { proposal_id: "published-proposal" },
+      "0008 backfills the source ledger for an already-installed 0007",
+    );
+    assert.deepEqual(
+      publishedDb.client.prepare("SELECT id, summary, status FROM question_change_proposals").get(),
+      { id: "published-proposal", summary: "已发布 0007 申请", status: "submitted" },
+      "0008 preserves the existing proposal audit row",
+    );
+    assert.equal(publishedDb.client.prepare("SELECT count(*) AS n FROM __drizzle_migrations").get().n, 9);
+    assert.equal(publishedDb.client.prepare("PRAGMA quick_check").pluck().get(), "ok");
+  } finally {
+    publishedDb.client.close();
   }
 
   process.stdout.write("Question change proposal tests passed.\n");

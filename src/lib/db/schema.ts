@@ -123,9 +123,22 @@ export const questionChangeProposals = sqliteTable("question_change_proposals", 
   uniqueIndex("question_change_proposals_owner_qid_active_unique")
     .on(table.ownerUserId, table.qid)
     .where(sql`${table.status} = 'submitted'`),
-  uniqueIndex("question_change_proposals_owner_qid_source_unique")
-    .on(table.ownerUserId, table.qid, table.sourceGenerationId, table.sourceOverrideVersion),
   check("question_change_proposals_status_check", sql`${table.status} in ('submitted', 'withdrawn')`),
+]);
+
+export const questionChangeProposalSources = sqliteTable("question_change_proposal_sources", {
+  ownerUserId: text("owner_user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  qid: text("qid").notNull(),
+  sourceGenerationId: text("source_generation_id").notNull(),
+  sourceOverrideVersion: integer("source_override_version").notNull(),
+  proposalId: text("proposal_id").notNull().references(() => questionChangeProposals.id, { onDelete: "cascade" }),
+  claimedAt: integer("claimed_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  primaryKey({
+    name: "question_change_proposal_sources_pk",
+    columns: [table.ownerUserId, table.qid, table.sourceGenerationId, table.sourceOverrideVersion],
+  }),
+  uniqueIndex("question_change_proposal_sources_proposal_unique").on(table.proposalId),
 ]);
 
 export const coachConversationsRelations = relations(coachConversations, ({ many, one }) => ({
