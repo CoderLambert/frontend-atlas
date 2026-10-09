@@ -176,6 +176,19 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .question-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, .42fr); align-items: start; gap: 1rem; }
 .question-main-column { display: grid; gap: 1rem; min-width: 0; }
 .question-aside { display: grid; gap: 1rem; }
+.question-private-card { display: grid; min-width: 0; gap: .75rem; padding: clamp(1rem, 2vw, 1.35rem); background: #f5f2e9; }
+.question-private-card > p { display: flex; align-items: flex-start; gap: .4rem; margin: 0; color: #4f6258; font-size: .84rem; line-height: 1.6; }
+.question-private-card > p a { margin-left: .2rem; color: #2f6654; font-weight: 650; text-decoration: underline; text-underline-offset: .15em; }
+.question-private-card > small { color: #758078; line-height: 1.5; }
+.private-editor-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.private-proposal-note { display: flex; align-items: flex-start; gap: .55rem; border-top: 1px solid #ded9ca; padding-top: .7rem; color: #6e654f; font-size: .76rem; line-height: 1.55; }
+.private-proposal-note svg { flex: 0 0 auto; margin-top: .12rem; }
+.question-private-dialog { width: min(72rem, calc(100% - 2rem)); max-height: 92vh; overflow-y: auto; }
+.private-editor-fields { display: grid; gap: .7rem; min-width: 0; }
+.private-explanation-input, .private-explanation-preview { width: 100%; min-height: min(52vh, 34rem); }
+.private-explanation-input { resize: vertical; font-family: var(--font-mono); font-size: .88rem; line-height: 1.65; }
+.private-explanation-preview { overflow: auto; border: 1px solid var(--input); border-radius: .75rem; background: #fcfdfb; padding: 1rem; outline: none; }
+.private-explanation-preview:focus-visible { border-color: var(--ring); box-shadow: 0 0 0 3px rgb(40 83 71 / 18%); }
 .answer-card, .reference-card, .related-card, .session-card { min-width: 0; padding: clamp(1rem, 2vw, 1.5rem); }
 .answer-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }
 .answer-card-header h2 { margin: 0; font-family: var(--font-serif); font-size: 1.2rem; }

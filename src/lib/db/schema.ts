@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import { check, foreignKey, index, integer, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
+import { check, foreignKey, index, integer, primaryKey, sqliteTable, text, unique } from "drizzle-orm/sqlite-core";
 import { account, session, user, verification } from "./auth-schema.ts";
 
 export { account, session, user, verification };
@@ -85,6 +85,21 @@ export const coachProviderBindings = sqliteTable("coach_provider_bindings", {
   createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
   updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
 });
+
+export const questionPrivateOverrides = sqliteTable("question_private_overrides", {
+  ownerUserId: text("owner_user_id").notNull().references(() => user.id, { onDelete: "cascade" }),
+  qid: text("qid").notNull(),
+  baseContentVersion: text("base_content_version").notNull(),
+  title: text("title").notNull(),
+  explanationMarkdown: text("explanation_markdown").notNull(),
+  checkpointsJson: text("checkpoints_json").notNull(),
+  version: integer("version").notNull().default(1),
+  createdAt: integer("created_at", { mode: "timestamp_ms" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" }).notNull(),
+}, (table) => [
+  primaryKey({ name: "question_private_overrides_owner_qid_pk", columns: [table.ownerUserId, table.qid] }),
+  index("question_private_overrides_owner_updated_idx").on(table.ownerUserId, table.updatedAt),
+]);
 
 export const coachConversationsRelations = relations(coachConversations, ({ many, one }) => ({
   owner: one(user, {

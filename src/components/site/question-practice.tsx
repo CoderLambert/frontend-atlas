@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BookOpen, CheckCircle2, Clock3, Eye, FileQuestion, RotateCcw, Save, WandSparkles } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
@@ -14,7 +14,9 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { CodeBlock } from "@/components/ui/code-block";
+import { QuestionPrivateEditor, type QuestionPrivateSelection } from "@/components/site/question-private-editor";
 import { checkpointsFor, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
+import { contentBlocksToMarkdown } from "@/lib/question-private-overrides";
 import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type SelfRating } from "@/lib/study-store";
 
 type PracticeQuestion = MasterQuestion | CompanyQuestion;
@@ -108,22 +110,36 @@ export function QuestionPractice({
   const [assessmentError, setAssessmentError] = useState("");
   const [assessedMessage, setAssessedMessage] = useState("");
   const [storedSnapshot, setStoredSnapshot] = useState(false);
+  const [privateSelection, setPrivateSelection] = useState<QuestionPrivateSelection>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const revisionTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const answerTextareaRef = useRef<HTMLTextAreaElement>(null);
   const previousAnswerViewMode = useRef<AnswerViewMode>("edit");
   const previousPreviewQuestionId = useRef(question.qid);
-  const checkpoints = checkpointsFor(question);
+  const publicCheckpoints = checkpointsFor(question);
+  const publicExplanationMarkdown = contentBlocksToMarkdown(question.content);
+  const privateOverride = privateSelection?.override ?? null;
+  const checkpoints = privateOverride
+    ? privateOverride.checkpoints.map((text, index) => ({ id: `${question.qid}-private-${index + 1}`, label: text, text }))
+    : publicCheckpoints;
+  const effectiveContentVersion = privateSelection && privateOverride
+    ? `${contentVersion}:private:${encodeURIComponent(privateSelection.ownerUserId)}:${privateOverride.version}`
+    : contentVersion;
+  const effectiveTitle = privateOverride?.title ?? question.title;
   const isMaster = "topic_id" in question;
   const sourceLabel = isMaster ? question.primary : question.company;
   const relatedActiveAssessment = currentAssessment(attempt);
-  const hasContentUpdate = Boolean(attempt && attempt.contentVersion !== contentVersion);
+  const hasContentUpdate = Boolean(attempt && attempt.contentVersion !== effectiveContentVersion);
   const hasAnswer = answer.trim().length > 0;
   const answerViewMode = answerViewSelection.qid === question.qid ? answerViewSelection.mode : "edit";
 
   function setAnswerViewMode(mode: AnswerViewMode) {
     setAnswerViewSelection({ qid: question.qid, mode });
   }
+
+  const handlePrivateSelectionChange = useCallback((selection: QuestionPrivateSelection) => {
+    setPrivateSelection(selection);
+  }, []);
 
   useEffect(() => {
     const questionChanged = previousPreviewQuestionId.current !== question.qid;
@@ -137,7 +153,15 @@ export function QuestionPractice({
   useEffect(() => {
     let active = true;
     Promise.resolve().then(() => {
-      if (active) setSaveState("loading");
+      if (active) {
+        setSaveState("loading");
+        setScores({});
+        setMissingNote("");
+        setReviewOption("none");
+        setCustomReviewDate("");
+        setAssessmentError("");
+        setAssessedMessage("");
+      }
       return getStudySnapshot();
     }).then((snapshot) => {
       if (!active) return;
@@ -152,7 +176,7 @@ export function QuestionPractice({
         setAnswer(latest.originalAnswer);
         if (draft?.kind === "revision") setRevision(draft.text);
         const assessment = [...latest.assessments].reverse().find((item) => !item.revokedAt) ?? null;
-        if (assessment && latest.contentVersion === contentVersion) {
+        if (assessment && latest.contentVersion === effectiveContentVersion) {
           setScores(assessment.scores);
           setMissingNote(assessment.missingNote);
           if (assessment.nextReviewOn) {
@@ -174,7 +198,7 @@ export function QuestionPractice({
     return () => {
       active = false;
     };
-  }, [question.qid, contentVersion]);
+  }, [question.qid, effectiveContentVersion]);
 
   async function persistAttempt(next: Attempt): Promise<boolean> {
     setAttempt(next);
@@ -195,7 +219,7 @@ export function QuestionPractice({
   function handleAnswerChange(value: string) {
     setAnswer(value);
     if (revealed) return;
-    const base = attempt && attempt.contentVersion === contentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, contentVersion);
+    const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion);
     const next = { ...base, originalAnswer: value, skipped: false, updatedAt: new Date().toISOString() };
     setAttempt(next);
     setSaveState("saving");
@@ -205,7 +229,7 @@ export function QuestionPractice({
   }
 
   async function handleReveal(skip: boolean) {
-    const base = attempt && attempt.contentVersion === contentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, contentVersion, answer);
+    const base = attempt && attempt.contentVersion === effectiveContentVersion && !attempt.revealedAt ? attempt : newAttempt(question.qid, effectiveContentVersion, answer);
     const now = new Date().toISOString();
     const next = { ...base, originalAnswer: answer, skipped: skip, revealedAt: now, updatedAt: now };
     setRevealed(true);
@@ -214,7 +238,7 @@ export function QuestionPractice({
   }
 
   function handleNewAttempt() {
-    const next = newAttempt(question.qid, contentVersion);
+    const next = newAttempt(question.qid, effectiveContentVersion);
     setAttempt(next);
     setAnswer("");
     setRevision("");
@@ -327,11 +351,12 @@ export function QuestionPractice({
       <div className="question-breadcrumb"><Link href="/questions/">题库</Link><span aria-hidden="true">/</span><span>{question.qid}</span><span aria-hidden="true">/</span><Link href={"/knowledge/" + topicId + "/"}>{topicTitle}</Link></div>
       <header className="question-heading">
         <div className="eyebrow">PRACTICE · 先作答，再对照</div>
-        <h1>{question.title}</h1>
+        <h1>{effectiveTitle}</h1>
         <div className="question-tags">
           <Badge variant="outline">{question.qid}</Badge>
           <Badge variant="secondary">{sourceLabel}</Badge>
           <Badge variant="subtle">{topicId} · {topicTitle}</Badge>
+          {privateOverride && <Badge variant="secondary">我的私人版本 v{privateOverride.version}</Badge>}
           {isMaster && question.original_metadata?.includes("P0") && <Badge variant="outline">P0 · 优先练习</Badge>}
         </div>
       </header>
@@ -413,9 +438,9 @@ export function QuestionPractice({
               <Card className="reference-card">
                 <div className="answer-card-header">
                   <div><h2>口述提纲</h2><p>从这道题自己的参考要点出发，用自己的话组织回答。</p></div>
-                  <Badge variant="secondary">{attempt?.contentVersion}</Badge>
+                  <Badge variant="secondary">{privateOverride ? `私人版本 v${privateOverride.version}` : attempt?.contentVersion}</Badge>
                 </div>
-                {question.qid === "D13" ? (
+                {question.qid === "D13" && !privateOverride ? (
                   <p className="oral-outline">同步逐项遍历有限 iterable，每取到一项立即用 Promise.resolve 注册处理器，按输入索引保存结果。计数哨兵处理空输入；任一拒绝使聚合拒绝，但不会取消其他工作。迭代中途抛错也要转成拒绝，并避免先展开再注册导致早先拒绝无人处理。它只组合结果，限制启动并发是 D02 的职责。</p>
                 ) : (
                   <ol className="oral-outline-list">{checkpoints.slice(0, 3).map((checkpoint) => <li key={checkpoint.id}>{checkpoint.label}</li>)}</ol>
@@ -424,8 +449,10 @@ export function QuestionPractice({
                   <AccordionItem value="answer">
                     <AccordionTrigger>展开完整参考答案、代码、边界与来源</AccordionTrigger>
                     <AccordionContent>
-                      <RichAnswer blocks={question.content} />
-                      {question.source.filename && <p className="source-note">来源：{question.source.filename}{question.source.version ? " · 版本 " + question.source.version : ""}{question.source.bookmark ? " · " + question.source.bookmark : ""}</p>}
+                      {privateOverride
+                        ? <CoachMarkdown source={privateOverride.explanationMarkdown} streaming={false} />
+                        : <RichAnswer blocks={question.content} />}
+                      {question.source.filename && <p className="source-note">{privateOverride ? "公共底稿来源：" : "来源："}{question.source.filename}{question.source.version ? " · 版本 " + question.source.version : ""}{question.source.bookmark ? " · " + question.source.bookmark : ""}</p>}
                     </AccordionContent>
                   </AccordionItem>
                 </Accordion>
@@ -503,6 +530,14 @@ export function QuestionPractice({
         </div>
 
         <aside className="question-aside" aria-label="题目关联信息">
+          <QuestionPrivateEditor
+            qid={question.qid}
+            contentVersion={contentVersion}
+            publicTitle={question.title}
+            publicExplanationMarkdown={publicExplanationMarkdown}
+            publicCheckpoints={publicCheckpoints.map((checkpoint) => checkpoint.text)}
+            onSelectionChange={handlePrivateSelectionChange}
+          />
           <Card className="related-card">
             <div className="card-heading"><BookOpen size={18} aria-hidden="true" /><span>关联知识</span></div>
             <Link className="related-topic" href={"/knowledge/" + topicId + "/"}><span>{topicTitle}</span><small>{topicId} · {sourceLabel}</small></Link>
@@ -520,7 +555,7 @@ export function QuestionPractice({
           <Card className="session-card">
             <div className="card-heading"><FileQuestion size={18} aria-hidden="true" /><span>本题记录</span></div>
             <p>{attempt?.skipped ? "已标记为跳过作答" : relatedActiveAssessment ? "已保存个人自评" : revealed ? "已查看参考答案" : attempt ? "作答中" : "尚未开始"}</p>
-            <small>内容版本 {attempt?.contentVersion ?? contentVersion}</small>
+            <small>内容版本 {attempt?.contentVersion ?? effectiveContentVersion}</small>
             {relatedActiveAssessment?.nextReviewOn && <small><Clock3 size={13} aria-hidden="true" /> {dueLabel}</small>}
             {storedSnapshot && <small>数据只保存在这个浏览器中。</small>}
           </Card>
