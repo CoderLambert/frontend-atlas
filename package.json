@@ -16,6 +16,7 @@
     "typecheck": "tsc --noEmit",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
+    "db:migrate:runtime": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/migrate-sqlite.mjs",
     "provider:bindings": "node --env-file-if-exists=.env.local --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/provider-bindings.mjs",
     "test:server-chat": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-server-chat.mjs",
     "test:legacy-import": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-legacy-import.mjs",
