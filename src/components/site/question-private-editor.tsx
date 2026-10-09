@@ -64,6 +64,7 @@ export function QuestionPrivateEditor({
   const [fullscreen, setFullscreen] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const requestEpoch = useRef(0);
+  const pendingWrite = useRef<AbortController | null>(null);
 
   const applyOverride = useCallback((owner: SiteAccount, value: QuestionPrivateOverride | null) => {
     setAccount(owner);
@@ -76,6 +77,9 @@ export function QuestionPrivateEditor({
     const epoch = ++requestEpoch.current;
     Promise.resolve().then(() => {
       if (controller.signal.aborted || requestEpoch.current !== epoch) return null;
+      pendingWrite.current?.abort();
+      pendingWrite.current = null;
+      setSaving(false);
       setLoading(true);
       setError("");
       setNotice("");
@@ -88,8 +92,9 @@ export function QuestionPrivateEditor({
       return fetch("/api/site-account", { credentials: "same-origin", cache: "no-store", signal: controller.signal });
     })
       .then(async (response) => {
-        if (!response || requestEpoch.current !== epoch) return null;
+        if (!response || controller.signal.aborted || requestEpoch.current !== epoch) return null;
         const data = await readJson(response) as AccountStatus | null;
+        if (controller.signal.aborted || requestEpoch.current !== epoch) return null;
         if (!response.ok || !data) throw new Error("无法读取站点账号。 ");
         if (!data.account) {
           setAccount(null);
@@ -103,7 +108,7 @@ export function QuestionPrivateEditor({
           headers: { [expectedAccountHeaderName]: data.account.id },
         });
         const privateData = await readJson(privateResponse);
-        if (requestEpoch.current !== epoch) return null;
+        if (controller.signal.aborted || requestEpoch.current !== epoch) return null;
         if (!privateResponse.ok) throw new Error(errorMessage(privateData, "无法读取私人版本。"));
         applyOverride(data.account, (privateData?.override ?? null) as QuestionPrivateOverride | null);
         return null;
@@ -118,18 +123,31 @@ export function QuestionPrivateEditor({
       .finally(() => {
         if (!controller.signal.aborted && requestEpoch.current === epoch) setLoading(false);
       });
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      pendingWrite.current?.abort();
+    };
   }, [applyOverride, onSelectionChange, qid, reloadKey]);
 
   useEffect(() => {
     if (typeof BroadcastChannel === "undefined") return;
     const channel = new BroadcastChannel("frontend-atlas-site-account");
     channel.onmessage = () => {
+      // Hide stale private content synchronously, before the next account read begins.
       requestEpoch.current += 1;
+      pendingWrite.current?.abort();
+      setAccount(null);
+      setOverride(null);
+      setEditorOpen(false);
+      setResetOpen(false);
+      setFullscreen(false);
+      setSaving(false);
+      setLoading(true);
+      onSelectionChange(null);
       setReloadKey((value) => value + 1);
     };
     return () => channel.close();
-  }, []);
+  }, [onSelectionChange]);
 
   function openEditor() {
     setTitle(override?.title ?? publicTitle);
@@ -160,11 +178,14 @@ export function QuestionPrivateEditor({
       setError("自评检查点最多 20 项，每项最多 2000 个字符。");
       return;
     }
+    const controller = new AbortController();
+    pendingWrite.current = controller;
     setSaving(true);
     setError("");
     try {
       const response = await fetch(`/api/questions/${encodeURIComponent(qid)}/private-override`, {
         method: "PATCH",
+        signal: controller.signal,
         credentials: "same-origin",
         cache: "no-store",
         headers: {
@@ -195,20 +216,26 @@ export function QuestionPrivateEditor({
       setNotice(`私人版本 v${saved.version} 已保存到此站点账号。`);
       setEditorOpen(false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "私人版本未能保存。");
+      if (requestEpoch.current === epoch && !(cause instanceof Error && cause.name === "AbortError")) {
+        setError(cause instanceof Error ? cause.message : "私人版本未能保存。");
+      }
     } finally {
-      setSaving(false);
+      if (pendingWrite.current === controller) pendingWrite.current = null;
+      if (requestEpoch.current === epoch) setSaving(false);
     }
   }
 
   async function reset() {
     if (!account || !override || saving) return;
     const epoch = requestEpoch.current;
+    const controller = new AbortController();
+    pendingWrite.current = controller;
     setSaving(true);
     setError("");
     try {
       const response = await fetch(`/api/questions/${encodeURIComponent(qid)}/private-override`, {
         method: "DELETE",
+        signal: controller.signal,
         credentials: "same-origin",
         cache: "no-store",
         headers: {
@@ -228,9 +255,12 @@ export function QuestionPrivateEditor({
       setNotice("已移除私人覆盖，当前重新显示公共题库版本。历史练习记录未删除。");
       setResetOpen(false);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "无法恢复公共版本。");
+      if (requestEpoch.current === epoch && !(cause instanceof Error && cause.name === "AbortError")) {
+        setError(cause instanceof Error ? cause.message : "无法恢复公共版本。");
+      }
     } finally {
-      setSaving(false);
+      if (pendingWrite.current === controller) pendingWrite.current = null;
+      if (requestEpoch.current === epoch) setSaving(false);
     }
   }
 
