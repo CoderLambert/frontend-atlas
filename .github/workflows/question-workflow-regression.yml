@@ -1,4 +1,4 @@
-name: Private question override regression
+name: Private question workflows
 
 on:
   pull_request:
@@ -28,6 +28,8 @@ jobs:
         run: npm run lint
       - name: Question override API and migration
         run: npm run test:question-overrides
+      - name: Question proposal snapshot and isolation
+        run: npm run test:question-proposals
       - name: IndexedDB compatibility
         run: npm run test:study-store
       - name: Backup validation

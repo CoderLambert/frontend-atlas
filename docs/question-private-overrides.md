@@ -26,6 +26,12 @@ Question edits are saved as a private SQLite overlay. The checked-in public ques
 - Static export mode excludes `*.node.ts` API handlers and does not mount a private editor or request those APIs.
 - Markdown/Streamdown/Shiki continue to load only on demand.
 
-## Future public proposal workflow
+## Public change proposals
 
-`base_content_version`, `generation_id` and private `version` are a review boundary, not a publication capability. A proposal must snapshot the exact private generation/revision, record the corresponding public base, keep explicit review status and require a separately authorized reviewer/operator to apply checked-in public content changes. Submission cannot imply approval, and ordinary users must not receive public-publish rights.
+- A signed-in user can submit the current private generation/revision as a public change proposal with a required review summary. The server reads the source override under the verified session owner and snapshots its title, Markdown explanation, checkpoints and server-trusted public base; client-supplied content is ignored.
+- A retry for the same source generation/revision is idempotent. Only one active proposal exists per owner and question. A changed private version cannot replace the active snapshot; the user must explicitly withdraw it first.
+- Withdrawing marks the proposal `withdrawn` and retains the immutable snapshot for audit. Resetting or editing the private override never changes or deletes a submitted proposal.
+- Proposal reads and withdrawals are owner-scoped. Guessing another proposal ID cannot expose or withdraw it.
+- Migration `0006` adds proposal storage and a partial unique index for the active `(owner_user_id, qid)` boundary.
+
+Submission is not publication. This phase intentionally has no approve, reject, merge or public-content mutation route. A later reviewer/operator workflow must use a separately authorized role, compare the stored `base_content_version` with the current public content, record a review decision and apply checked-in content through an auditable repository change. Ordinary users must never receive public-publish rights.

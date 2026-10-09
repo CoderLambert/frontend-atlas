@@ -181,6 +181,12 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .question-private-card > p a { margin-left: .2rem; color: #2f6654; font-weight: 650; text-decoration: underline; text-underline-offset: .15em; }
 .question-private-card > small { color: #758078; line-height: 1.5; }
 .private-editor-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.question-proposal-status { display: grid; gap: .55rem; border: 1px solid #c8d7cc; border-radius: .75rem; background: #f8fbf8; padding: .75rem; }
+.question-proposal-status > div { display: grid; gap: .15rem; }
+.question-proposal-status strong { color: #315e4d; font-size: .86rem; }
+.question-proposal-status span { color: #718078; font-size: .72rem; line-height: 1.5; }
+.question-proposal-status > p { margin: 0; color: #4f6258; font-size: .78rem; line-height: 1.55; overflow-wrap: anywhere; }
+.question-proposal-status > button { justify-self: start; }
 .private-proposal-note { display: flex; align-items: flex-start; gap: .55rem; border-top: 1px solid #ded9ca; padding-top: .7rem; color: #6e654f; font-size: .76rem; line-height: 1.55; }
 .private-proposal-note svg { flex: 0 0 auto; margin-top: .12rem; }
 .question-private-dialog { width: min(72rem, calc(100% - 2rem)); max-height: 92vh; overflow-y: auto; }

@@ -43,6 +43,13 @@
       "when": 1791520005069,
       "tag": "0005_question_override_generation",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1791530461753,
+      "tag": "0006_high_strong_guy",
+      "breakpoints": true
     }
   ]
 }
