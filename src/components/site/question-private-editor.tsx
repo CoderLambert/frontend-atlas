@@ -68,6 +68,7 @@ export function QuestionPrivateEditor({
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+  const accountLoginHref = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_DEPLOYMENT_MODE === "hosted" ? "/account/" : "/coach/sessions/";
   const [title, setTitle] = useState(publicTitle);
   const [explanation, setExplanation] = useState(publicExplanationMarkdown);
   const [checkpointText, setCheckpointText] = useState(publicCheckpoints.join("\n"));
@@ -443,7 +444,7 @@ export function QuestionPrivateEditor({
             )}
           </>
         ) : (
-          <p>登录站点账号后，才能跨刷新与重启保存自己的题干、讲解和检查点。<Link href="/coach/sessions/">前往登录</Link></p>
+          <p>登录站点账号后，才能跨刷新与重启保存自己的题干、讲解和检查点。<Link href={accountLoginHref} data-testid="private-question-login-link">前往登录</Link></p>
         )}
         <div className="private-proposal-note"><GitPullRequest size={16} aria-hidden="true" /><span>私人保存不会修改公共题库。提交申请只会冻结一份待审核快照；普通用户不能直接发布公共内容。</span></div>
         {notice && <p className="assessment-success" role="status">{notice}</p>}

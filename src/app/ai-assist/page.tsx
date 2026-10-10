@@ -15,6 +15,32 @@ const setupCommands = "git clone https://github.com/CoderLambert/frontend-atlas.
 const updateCommands = "git pull --ff-only\nnpm ci\nnpm run local:dev";
 
 export default function AiAssistPage() {
+  if (process.env.NEXT_PUBLIC_FRONTEND_ATLAS_DEPLOYMENT_MODE === "hosted") {
+    return (
+      <div className="assist-guide-page">
+        <section className="page-intro" aria-labelledby="assist-title">
+          <div className="eyebrow">OPTIONAL · AI INTEGRATION</div>
+          <div className="intro-row">
+            <div>
+              <h1 id="assist-title">AI 辅助练习</h1>
+              <p>当前 Docker 部署提供题库、学习进度和站点账号功能；ChatGPT/SIWC 本机授权不会随镜像迁移。</p>
+            </div>
+            <Badge variant="outline">站点已部署 · AI 未连接</Badge>
+          </div>
+        </section>
+        <Card className="assist-static-notice">
+          <CardContent>
+            <div className="assist-notice-icon"><ShieldCheck size={20} aria-hidden="true" /></div>
+            <div>
+              <strong>此部署不提供远程 ChatGPT 账号连接</strong>
+              <p>此部署已关闭 AI 教练入口和 SIWC 服务；本机回环 OAuth 回调不能指向公开域名，站点镜像也不会带入任何 ChatGPT 会话。OpenAI 为用户独占的自托管 VM 文档化了本地授权后安全转移受保护凭据的流程，但本部署没有实现或验证这条独立链路。请勿把令牌放进镜像、部署环境变量或共享服务。</p>
+              <p>Git 审核与发布操作也只能在独立的受信任 operator checkout 中进行，Web 容器不包含 Git 仓库或发布权限。</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
   return (
     <div className="assist-guide-page">
       <section className="page-intro" aria-labelledby="assist-title">

@@ -7,6 +7,10 @@ import { startFrontendAfterBackendReady, terminateChild } from "./local-runner-u
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2];
+const hostedDeployment = process.env.FRONTEND_ATLAS_DEPLOYMENT_MODE === "hosted";
+const appHost = process.env.FRONTEND_ATLAS_BIND_HOST ?? "127.0.0.1";
+const appPort = Number(process.env.FRONTEND_ATLAS_APP_PORT ?? 3000);
+const shutdownTimeoutMs = Number(process.env.FRONTEND_ATLAS_SHUTDOWN_TIMEOUT_MS ?? 4_000);
 const allowedModes = new Set(["dev", "build", "start"]);
 if (!allowedModes.has(mode)) {
   process.stderr.write("Use one of: dev, build, start.\n");
@@ -16,7 +20,9 @@ if (!allowedModes.has(mode)) {
 const env = {
   ...process.env,
   FRONTEND_ATLAS_LOCAL_MODE: "1",
-  FRONTEND_ATLAS_SIWC_SERVICE_TOKEN: process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN ?? randomBytes(32).toString("base64url"),
+  ...(!hostedDeployment ? {
+    FRONTEND_ATLAS_SIWC_SERVICE_TOKEN: process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN ?? randomBytes(32).toString("base64url"),
+  } : {}),
   NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE: "1",
   NEXT_TELEMETRY_DISABLED: "1",
 };
@@ -61,6 +67,10 @@ async function waitForLocalService(child) {
 }
 
 async function main() {
+  if (!Number.isInteger(appPort) || appPort < 1 || appPort > 65_535) throw new Error("FRONTEND_ATLAS_APP_PORT must be a valid TCP port.");
+  if (!Number.isInteger(shutdownTimeoutMs) || shutdownTimeoutMs < 1_000 || shutdownTimeoutMs > 25_000) {
+    throw new Error("FRONTEND_ATLAS_SHUTDOWN_TIMEOUT_MS must be between 1000 and 25000 milliseconds.");
+  }
   if (mode === "build" || mode === "dev") runSync(path.join(root, "scripts", "generate-content-index.mjs"));
   if (mode === "build") {
     const result = spawnSync(node, [nextBin, "build"], { cwd: root, env, stdio: "inherit" });
@@ -68,25 +78,27 @@ async function main() {
     process.exit(result.status ?? 1);
   }
 
-  await assertPortFree(3000);
-  await assertPortFree(4317);
-  const backend = spawn(node, [localServer], { cwd: root, env, stdio: "inherit" });
+  await assertPortFree(appPort);
+  if (!hostedDeployment) await assertPortFree(4317);
+  const backend = hostedDeployment ? null : spawn(node, [localServer], { cwd: root, env, stdio: "inherit" });
   let next = null;
   const stopAll = async (exitCode = 0) => {
-    await Promise.all([terminateChild(next), terminateChild(backend)]);
+    await Promise.all([terminateChild(next, shutdownTimeoutMs), ...(backend ? [terminateChild(backend, shutdownTimeoutMs)] : [])]);
     process.exit(exitCode);
   };
   process.once("SIGINT", () => { void stopAll(0); });
   process.once("SIGTERM", () => { void stopAll(0); });
-  backend.once("exit", (code) => {
+  backend?.once("exit", (code) => {
     if (next && next.exitCode === null) void stopAll(code ?? 1);
   });
   const command = mode === "dev" ? "dev" : "start";
-  next = await startFrontendAfterBackendReady({
-    backend,
-    waitForBackend: waitForLocalService,
-    startFrontend: () => spawn(node, [nextBin, command, "--hostname", "127.0.0.1", "--port", "3000"], { cwd: root, env, stdio: "inherit" }),
-  });
+  next = hostedDeployment
+    ? spawn(node, [nextBin, command, "--hostname", appHost, "--port", String(appPort)], { cwd: root, env, stdio: "inherit" })
+    : await startFrontendAfterBackendReady({
+      backend,
+      waitForBackend: waitForLocalService,
+      startFrontend: () => spawn(node, [nextBin, command, "--hostname", appHost, "--port", String(appPort)], { cwd: root, env, stdio: "inherit" }),
+    });
   next.once("exit", (code) => { void stopAll(code ?? 0); });
 }
 

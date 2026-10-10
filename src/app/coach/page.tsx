@@ -7,7 +7,7 @@ export const metadata = { title: "AI答题教练" };
 type CoachSearchParams = Promise<{ qid?: string | string[] }>;
 
 export default async function CoachPage({ searchParams }: { searchParams: CoachSearchParams }) {
-  if (process.env.FRONTEND_ATLAS_LOCAL_MODE !== "1") notFound();
+  if (process.env.FRONTEND_ATLAS_LOCAL_MODE !== "1" || process.env.FRONTEND_ATLAS_DEPLOYMENT_MODE === "hosted") notFound();
   const questions: CoachQuestion[] = questionIndex.map(({ qid, title, primary, subtopic, kind }) => ({
     qid, title, primary, subtopic, kind,
   }));

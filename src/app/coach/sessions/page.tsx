@@ -5,6 +5,6 @@ import { questionIds } from "@/lib/content";
 export const metadata = { title: "账号会话" };
 
 export default function CoachSessionsPage() {
-  if (process.env.FRONTEND_ATLAS_LOCAL_MODE !== "1") notFound();
+  if (process.env.FRONTEND_ATLAS_LOCAL_MODE !== "1" || process.env.FRONTEND_ATLAS_DEPLOYMENT_MODE === "hosted") notFound();
   return <CoachAccountSessions knownQids={[...questionIds]} />;
 }

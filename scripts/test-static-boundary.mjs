@@ -18,6 +18,9 @@ async function collect(directory) {
 await stat(outputRoot).catch(() => {
   throw new Error("Static output was not found. Run npm run build before checking the publish boundary.");
 });
+await stat(path.join(outputRoot, "api", "health")).then(() => {
+  throw new Error("Node-only health handler leaked into the static export.");
+}, () => {});
 await collect(outputRoot);
 
 const coachRoute = path.join(outputRoot, "coach", "index.html");

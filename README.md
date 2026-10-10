@@ -2,6 +2,16 @@
 
 面向个人复习的 Next.js App Router 学习站。默认构建仍是静态学习站；可选的 AI 答题教练只在本地运行配置中启用。资料保留原题 ID、章节映射和来源信息。普通学习记录和旧版 `/coach/` 对话保存在当前浏览器的 IndexedDB；登录后的 `/coach/sessions/` 会话、消息和助手运行按站点用户保存在本机 SQLite。
 
+## Docker 部署
+
+需要在其他机器运行站点时，使用可配置域名、Caddy HTTPS、持久化 SQLite 和安全备份/恢复入口：
+
+```sh
+./deploy.sh
+```
+
+首次运行会询问本地测试或 HTTPS 域名部署，并安全输入 Better Auth/OAuth 配置。部署只迁移站点；本机 ChatGPT/SIWC 会话不会复制或启用。完整要求、OAuth 回调、数据恢复和 operator 权限边界见 [Docker 部署说明](./docs/docker-deployment.md)。
+
 ## 内容范围
 
 - 214 道主练题（含 3 道 React 学习试点新增题）
