@@ -30,6 +30,12 @@ jobs:
         run: npm run test:question-overrides
       - name: Question proposal snapshot and isolation
         run: npm run test:question-proposals
+      - name: Question reviewer authorization and audit
+        run: npm run test:question-review
+      - name: Question publication Git audit
+        run: npm run test:question-publication
+      - name: Question review migration
+        run: npm run test:question-review-migration
       - name: Explicit OAuth link contract
         run: npm run test:auth-link
       - name: SIWC service contract
@@ -54,6 +60,7 @@ jobs:
             exit 1
           fi
           CHROMIUM_PATH="$CHROME" npm run test:question-overrides-browser
+          CHROMIUM_PATH="$CHROME" npm run test:question-review-browser
           CHROMIUM_PATH="$CHROME" npm run test:coach-account-browser
           CHROMIUM_PATH="$CHROME" npm run test:coach-assistant-browser
       - name: Static export build

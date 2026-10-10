@@ -38,6 +38,7 @@ export class QuestionPrivateOverrideRepository {
           ownerUserId,
           qid,
           baseContentVersion: input.baseContentVersion,
+          baseContentSha256: input.baseContentSha256,
           title: input.title,
           explanationMarkdown: input.explanationMarkdown,
           checkpointsJson: JSON.stringify(input.checkpoints),
@@ -51,6 +52,7 @@ export class QuestionPrivateOverrideRepository {
 
       const updated = transaction.update(questionPrivateOverrides).set({
         baseContentVersion: input.baseContentVersion,
+        baseContentSha256: input.baseContentSha256,
         title: input.title,
         explanationMarkdown: input.explanationMarkdown,
         checkpointsJson: JSON.stringify(input.checkpoints),
@@ -90,6 +92,7 @@ type ValidatedOverrideInput = {
   expectedVersion: number | null;
   expectedGenerationId: string | null;
   baseContentVersion: string;
+  baseContentSha256: string;
   title: string;
   explanationMarkdown: string;
   checkpoints: string[];
@@ -99,15 +102,18 @@ export class QuestionPrivateOverrideService {
   private readonly repository: QuestionPrivateOverrideRepository;
   private readonly knownQids: ReadonlySet<string>;
   private readonly publicContentVersion: string;
+  private readonly publicContentHashes: ReadonlyMap<string, string>;
 
   constructor(
     repository: QuestionPrivateOverrideRepository,
     knownQids: ReadonlySet<string>,
     publicContentVersion: string,
+    publicContentHashes: ReadonlyMap<string, string>,
   ) {
     this.repository = repository;
     this.knownQids = knownQids;
     this.publicContentVersion = publicContentVersion;
+    this.publicContentHashes = publicContentHashes;
   }
 
   find(ownerUserId: string, qid: string) {
@@ -120,7 +126,9 @@ export class QuestionPrivateOverrideService {
     if (!this.knownQids.has(qid)) return { kind: "not-found" as const };
     const input = validateInput(body);
     if (!input) return { kind: "invalid" as const };
-    const result = this.repository.save(ownerUserId, qid, { ...input, baseContentVersion: this.publicContentVersion });
+    const baseContentSha256 = this.publicContentHashes.get(qid);
+    if (!baseContentSha256) return { kind: "not-found" as const };
+    const result = this.repository.save(ownerUserId, qid, { ...input, baseContentVersion: this.publicContentVersion, baseContentSha256 });
     return result.kind === "saved"
       ? { kind: "saved" as const, value: present(result.value) }
       : { kind: "conflict" as const, current: result.current ? present(result.current) : null };
@@ -140,7 +148,7 @@ function validGenerationId(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 128;
 }
 
-function validateInput(body: Record<string, unknown>): Omit<ValidatedOverrideInput, "baseContentVersion"> | null {
+function validateInput(body: Record<string, unknown>): Omit<ValidatedOverrideInput, "baseContentVersion" | "baseContentSha256"> | null {
   const expectedVersion = body.expectedVersion;
   const expectedGenerationId = body.expectedGenerationId;
   if (expectedVersion === null) {
@@ -173,6 +181,7 @@ function present(value: StoredOverride) {
     qid: value.qid,
     generationId: value.generationId,
     baseContentVersion: value.baseContentVersion,
+    baseContentSha256: value.baseContentSha256,
     title: value.title,
     explanationMarkdown: value.explanationMarkdown,
     checkpoints: Array.isArray(checkpoints) ? checkpoints.filter((item): item is string => typeof item === "string") : [],

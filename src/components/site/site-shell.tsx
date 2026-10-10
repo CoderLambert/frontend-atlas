@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { BookOpen, Clock3, Database, FileQuestion, MessageSquareText, Search, Sparkles, WandSparkles } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { ReviewerNavLink } from "@/components/site/reviewer-nav-link";
 
 const navigation = [
   { href: "/", label: "学习台", icon: BookOpen },
@@ -25,7 +26,8 @@ function isCurrent(pathname: string, href: string) {
 
 export function SiteShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const current = pathname.startsWith("/data/") ? "本设备数据" : localNavigation.find((item) => isCurrent(pathname, item.href))?.label ?? "学习台";
+  const reviewerActive = pathname.startsWith("/moderation/questions/");
+  const current = reviewerActive ? "题库审核" : pathname.startsWith("/data/") ? "本设备数据" : localNavigation.find((item) => isCurrent(pathname, item.href))?.label ?? "学习台";
 
   return (
     <div className={cn("app-frame", isLocalCoachEnabled && "has-local-coach")}>
@@ -45,6 +47,7 @@ export function SiteShell({ children }: { children: React.ReactNode }) {
               </Link>
             );
           })}
+          {isLocalCoachEnabled && <ReviewerNavLink active={reviewerActive} />}
         </nav>
         <div className="sidebar-footnote">
           <Link className="sidebar-data-link" href="/data/"><Database size={17} aria-hidden="true" />本设备数据</Link>
@@ -83,6 +86,7 @@ export function SiteShell({ children }: { children: React.ReactNode }) {
             </Link>
           );
         })}
+        {isLocalCoachEnabled && <ReviewerNavLink mobile active={reviewerActive} />}
       </nav>
     </div>
   );

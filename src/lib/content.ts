@@ -9,11 +9,11 @@ export type QuestionSource = { filename?: string; version?: number; sha256?: str
 export type MasterQuestion = {
   qid: string; title: string; primary: string; subtopic: string; tags: string[]; mode: string;
   prerequisites: string[]; topic_id: string; source: QuestionSource; original_metadata?: string;
-  content: ContentBlock[]; index_anchor: string;
+  content: ContentBlock[]; explanation_markdown?: string; checkpoints?: string[]; index_anchor: string;
 };
 export type CompanyQuestion = {
   qid: string; company: string; title: string; master_ids: string[]; topic_ids: string[];
-  source_ids: string[]; source: QuestionSource; content: ContentBlock[]; index_anchor: string;
+  source_ids: string[]; source: QuestionSource; content: ContentBlock[]; explanation_markdown?: string; checkpoints?: string[]; index_anchor: string;
 };
 export type Topic = { topic_id: string; primary: string; subtopic: string; question_ids: string[]; index_anchor: string; display_order: number[] };
 export type Checkpoint = { id: string; label: string; text: string };
@@ -99,6 +99,9 @@ function firstSentence(text: string) {
 }
 
 export function checkpointsFor(question: MasterQuestion | CompanyQuestion): Checkpoint[] {
+  if (Array.isArray(question.checkpoints) && question.checkpoints.length > 0) {
+    return question.checkpoints.map((text, index) => ({ id: `${question.qid}-${index + 1}`, label: firstSentence(text), text }));
+  }
   if (question.qid === "D13") {
     return d13Checkpoints.map((text, index) => ({ id: "D13-" + (index + 1), label: firstSentence(text), text }));
   }
@@ -125,4 +128,16 @@ export function checkpointsFor(question: MasterQuestion | CompanyQuestion): Chec
     const label = sentence.length > 130 ? sentence.slice(0, 127) + "…" : sentence;
     return { id: question.qid + "-" + (index + 1), label, text };
   });
+}
+
+export function explanationMarkdownFor(question: MasterQuestion | CompanyQuestion) {
+  if (typeof question.explanation_markdown === "string" && question.explanation_markdown.trim()) {
+    return question.explanation_markdown;
+  }
+  return question.content.map((block) => {
+    if (block.kind === "heading") return `### ${block.text}`;
+    if (block.kind === "code") return `\`\`\`${block.language ?? "text"}\n${block.text}\n\`\`\``;
+    const links = block.links?.map((link) => `[${link.label}](${link.target})`).join(" · ");
+    return links ? `${block.text}\n\n${links}` : block.text;
+  }).join("\n\n");
 }

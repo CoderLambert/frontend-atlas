@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type { QuestionChangeProposal } from "@/lib/question-change-proposals";
+import type { QuestionChangeProposal, QuestionChangeProposalHistory } from "@/lib/question-change-proposals";
 import type { QuestionPrivateOverride } from "@/lib/question-private-overrides";
 
 const CoachMarkdown = dynamic(() => import("@/components/site/coach-markdown").then((module) => module.CoachMarkdown), {
@@ -35,6 +35,9 @@ function errorMessage(data: Record<string, unknown> | null, fallback: string) {
   if (data?.error === "private_version_conflict") return "私人版本已经变化，未提交旧快照。请核对当前版本后重新申请。";
   if (data?.error === "active_proposal_exists") return "已有一份待审核申请。请先撤回，再提交新的私人版本。";
   if (data?.error === "proposal_withdrawn") return "这份私人版本的审核申请已撤回，不能重新激活。请先保存一个新的私人版本再申请。";
+  if (data?.error === "proposal_source_processed") return "这份私人版本已经完成审核。请先保存新的私人 revision，再提交新申请。";
+  if (data?.error === "proposal_already_processed") return "这份申请已被 reviewer 处理，不能再撤回。";
+  if (data?.error === "public_base_conflict") return "公共题库基线已经变化。请重新保存私人版本，使其绑定当前公共基线后再申请。";
   return typeof data?.message === "string" ? data.message : fallback;
 }
 
@@ -56,6 +59,7 @@ export function QuestionPrivateEditor({
   const [account, setAccount] = useState<SiteAccount | null>(null);
   const [override, setOverride] = useState<QuestionPrivateOverride | null>(null);
   const [proposal, setProposal] = useState<QuestionChangeProposal | null>(null);
+  const [proposalHistory, setProposalHistory] = useState<QuestionChangeProposalHistory[]>([]);
   const [loading, setLoading] = useState(true);
   const [editorOpen, setEditorOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
@@ -94,6 +98,7 @@ export function QuestionPrivateEditor({
       setAccount(null);
       setOverride(null);
       setProposal(null);
+      setProposalHistory([]);
       setEditorOpen(false);
       setFullscreen(false);
       setResetOpen(false);
@@ -111,6 +116,7 @@ export function QuestionPrivateEditor({
           setAccount(null);
           setOverride(null);
           setProposal(null);
+          setProposalHistory([]);
           onSelectionChange({ ownerUserId: "", override: null });
           return null;
         }
@@ -129,6 +135,7 @@ export function QuestionPrivateEditor({
         if (!privateResponse.ok) throw new Error(errorMessage(privateData, "无法读取私人版本。"));
         if (!proposalResponse.ok) throw new Error(errorMessage(proposalData, "无法读取变更申请。"));
         setProposal((proposalData?.proposal ?? null) as QuestionChangeProposal | null);
+        setProposalHistory((proposalData?.history ?? []) as QuestionChangeProposalHistory[]);
         applyOverride(data.account, (privateData?.override ?? null) as QuestionPrivateOverride | null);
         return null;
       })
@@ -137,6 +144,7 @@ export function QuestionPrivateEditor({
         setAccount(null);
         setOverride(null);
         setProposal(null);
+        setProposalHistory([]);
         onSelectionChange(null);
         setError(cause instanceof Error ? cause.message : "无法读取私人版本。");
       })
@@ -159,6 +167,7 @@ export function QuestionPrivateEditor({
       setAccount(null);
       setOverride(null);
       setProposal(null);
+      setProposalHistory([]);
       setEditorOpen(false);
       setResetOpen(false);
       setProposalOpen(false);
@@ -334,6 +343,7 @@ export function QuestionPrivateEditor({
       }
       const submitted = data?.proposal as QuestionChangeProposal;
       setProposal(submitted);
+      setProposalHistory((current) => [{ ...submitted, review: null }, ...current.filter((item) => item.id !== submitted.id)].slice(0, 20));
       setProposalOpen(false);
       setNotice(`变更申请已提交，快照为私人版本 v${submitted.sourceOverrideVersion}。公共题库尚未改变。`);
     } catch (cause) {
@@ -368,8 +378,17 @@ export function QuestionPrivateEditor({
       });
       const data = await readJson(response);
       if (requestEpoch.current !== epoch) return;
-      if (!response.ok) throw new Error(errorMessage(data, "无法撤回变更申请。"));
+      if (!response.ok) {
+        if (data?.proposal && typeof data.proposal === "object") {
+          const current = data.proposal as QuestionChangeProposal;
+          if (current.status !== "submitted") setProposal(null);
+          setProposalHistory((history) => history.map((item) => item.id === current.id ? { ...item, ...current } : item));
+        }
+        throw new Error(errorMessage(data, "无法撤回变更申请。"));
+      }
+      const withdrawn = data?.proposal as QuestionChangeProposal;
       setProposal(null);
+      setProposalHistory((history) => history.map((item) => item.id === withdrawn.id ? { ...item, ...withdrawn } : item));
       setWithdrawOpen(false);
       setNotice("变更申请已撤回；私人版本仍保留，公共题库没有改变。");
     } catch (cause) {
@@ -409,6 +428,18 @@ export function QuestionPrivateEditor({
                 <p>{proposal.summary}</p>
                 <Button type="button" variant="ghost" size="sm" onClick={() => setWithdrawOpen(true)} data-testid="question-proposal-withdraw">撤回申请</Button>
               </div>
+            )}
+            {proposalHistory.length > 0 && (
+              <section className="question-proposal-history" aria-labelledby={`proposal-history-${qid}`}>
+                <h3 id={`proposal-history-${qid}`}>申请记录</h3>
+                <ol>{proposalHistory.map((item) => (
+                  <li key={item.id}>
+                    <div><strong>{item.status}</strong><span>私人 v{item.sourceOverrideVersion} · {new Date(item.createdAt).toLocaleString("zh-CN")}</span></div>
+                    <p>{item.summary}</p>
+                    {item.review && <blockquote><strong>审核意见</strong><span>{item.review.comment}</span><time dateTime={item.review.decidedAt}>{new Date(item.review.decidedAt).toLocaleString("zh-CN")}</time></blockquote>}
+                  </li>
+                ))}</ol>
+              </section>
             )}
           </>
         ) : (

@@ -15,8 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { CodeBlock } from "@/components/ui/code-block";
 import { QuestionPrivateEditor, type QuestionPrivateSelection } from "@/components/site/question-private-editor";
-import { checkpointsFor, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
-import { contentBlocksToMarkdown } from "@/lib/question-private-overrides";
+import { checkpointsFor, explanationMarkdownFor, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
 import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type Draft, type SelfRating } from "@/lib/study-store";
 
 type PracticeQuestion = MasterQuestion | CompanyQuestion;
@@ -121,7 +120,7 @@ export function QuestionPractice({
   const previousAnswerViewMode = useRef<AnswerViewMode>("edit");
   const previousPreviewQuestionId = useRef(question.qid);
   const publicCheckpoints = checkpointsFor(question);
-  const publicExplanationMarkdown = contentBlocksToMarkdown(question.content);
+  const publicExplanationMarkdown = explanationMarkdownFor(question);
   const privateOverride = privateSelection?.override ?? null;
   const checkpoints = privateOverride
     ? privateOverride.checkpoints.map((text, index) => ({ id: `${question.qid}-private-${index + 1}`, label: text, text }))
@@ -514,7 +513,9 @@ export function QuestionPractice({
                     <AccordionContent>
                       {privateOverride
                         ? <CoachMarkdown source={privateOverride.explanationMarkdown} streaming={false} />
-                        : <RichAnswer blocks={question.content} />}
+                        : question.explanation_markdown
+                          ? <CoachMarkdown source={question.explanation_markdown} streaming={false} />
+                          : <RichAnswer blocks={question.content} />}
                       {question.source.filename && <p className="source-note">{privateOverride ? "公共底稿来源：" : "来源："}{question.source.filename}{question.source.version ? " · 版本 " + question.source.version : ""}{question.source.bookmark ? " · " + question.source.bookmark : ""}</p>}
                     </AccordionContent>
                   </AccordionItem>
