@@ -104,11 +104,25 @@ try {
         return new Response(JSON.stringify({ authConfigured: true, providers: { github: true, google: false }, account: null }), { status: 200, headers: { "content-type": "application/json" } });
       }
       if (url.pathname !== "/api/auth/sign-in/social") return nativeFetch(input, init);
-      const response = await nativeFetch(input, init);
-      const payload = await response.clone().json();
       const requestBody = JSON.parse(init.body || "{}");
+      window.__siteLoginProbe = { phase: "request-started", method: init.method, body: requestBody };
+      let response;
+      try {
+        response = await nativeFetch(input, init);
+      } catch (error) {
+        window.__siteLoginProbe = { phase: "fetch-error", name: error?.name || "Error" };
+        throw error;
+      }
+      const contentType = response.headers.get("content-type") || "";
+      let payload;
+      try {
+        payload = await response.clone().json();
+      } catch {
+        window.__siteLoginProbe = { phase: "non-json-response", status: response.status, contentType };
+        return response;
+      }
       const authorization = payload.url ? new URL(payload.url) : null;
-      window.__siteLoginProbe = { status: response.status, body: requestBody, authorization: payload.url || null };
+      window.__siteLoginProbe = { phase: "response", status: response.status, body: requestBody, authorization: payload.url || null };
       if (!response.ok || !authorization) return response;
       const state = authorization.searchParams.get("state");
       const callback = new URL("/api/auth/callback/github", location.origin);
@@ -121,8 +135,14 @@ try {
   await command("Page.navigate", { url: `${origin}/account/` });
   await waitFor(async () => evaluate("document.querySelector('[data-testid=hosted-sign-in-github]') !== null"), "hosted site-account login entry");
   await evaluate("document.querySelector('[data-testid=hosted-sign-in-github]').click()");
-  await waitFor(async () => evaluate("Boolean(window.__siteLoginProbe?.authorization)"), "site OAuth request configuration");
+  try {
+    await waitFor(async () => evaluate("window.__siteLoginProbe?.phase !== undefined && window.__siteLoginProbe?.phase !== 'request-started'"), "site OAuth request configuration");
+  } catch (error) {
+    const diagnostic = await evaluate(`({ probe: window.__siteLoginProbe || null, buttonDisabled: document.querySelector('[data-testid=hosted-sign-in-github]')?.disabled ?? null, alert: document.querySelector('[role=alert]')?.textContent || null })`);
+    throw new Error(`${error.message} Browser diagnostic: ${JSON.stringify(diagnostic)}`);
+  }
   const flow = await evaluate("window.__siteLoginProbe");
+  assert.equal(flow.phase, "response", `site OAuth request did not return a JSON authorization response: ${JSON.stringify(flow)}`);
   assert.equal(flow.status, 200, "hosted site OAuth request should create the provider authorization URL");
   assert.deepEqual(flow.body, { provider: "github", callbackURL: "/account/", disableRedirect: true }, "browser requests an authorization URL for its same-domain callback without following an external OAuth redirect inside fetch");
   const authorization = new URL(flow.authorization);
