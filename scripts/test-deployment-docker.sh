@@ -120,17 +120,18 @@ const visible = await fetch(root + '/coach/');
 if (visible.status !== 404) throw new Error('local-only coach page was not disabled');
 const good = await fetch(root + '/api/auth/get-session', { headers: { origin: root } });
 if (good.status >= 500) throw new Error('runtime auth URL did not initialize');
-const bad = await fetch(root + '/api/auth/sign-in/social', {
+const badCallback = await fetch(root + '/api/auth/sign-in/social', {
   method: 'POST',
-  headers: {
-    origin: 'https://attacker.example',
-    'sec-fetch-site': 'cross-site',
-    'sec-fetch-mode': 'cors',
-    'content-type': 'application/json',
-  },
-  body: JSON.stringify({ provider: 'github', callbackURL: '/' }),
+  headers: { origin: root, 'content-type': 'application/json' },
+  body: JSON.stringify({ provider: 'github', callbackURL: 'https://attacker.example/' }),
 });
-if (bad.status < 400) throw new Error('unexpected Origin was accepted');
+if (badCallback.status < 400) throw new Error('untrusted OAuth callback was accepted');
+const badOrigin = await fetch(root + '/api/questions/D13/private-override', {
+  method: 'PATCH',
+  headers: { origin: 'https://attacker.example', 'content-type': 'application/json', 'x-frontend-atlas-request': '1' },
+  body: JSON.stringify({}),
+});
+if (badOrigin.status !== 403) throw new Error(`unexpected Origin was not rejected: ${badOrigin.status}`);
 EOF
 
 FRONTEND_ATLAS_TEST_URL="http://127.0.0.1:$app_port" CHROMIUM_PATH="${CHROMIUM_PATH:-}" node scripts/test-deployment-browser.mjs
