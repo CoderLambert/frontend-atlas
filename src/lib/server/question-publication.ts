@@ -69,6 +69,7 @@ function run(command: string, args: string[], cwd: string, options: { allowFailu
   const result = spawnSync(command, args, {
     cwd,
     encoding: "utf8",
+    maxBuffer: 8 * 1024 * 1024,
     env: options.env ?? process.env,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -126,7 +127,7 @@ function questionSearchText(question: JsonObject) {
     ...tags,
     question.explanation_markdown,
     ...checkpoints,
-    ...content.filter((block) => block.kind !== "code").map((block) => block.text),
+    ...(question.explanation_markdown ? [] : content.filter((block) => block.kind !== "code").map((block) => block.text)),
   ].filter(Boolean).join(" ").toLocaleLowerCase("zh-CN");
 }
 

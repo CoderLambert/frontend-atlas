@@ -1,0 +1,395 @@
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { generateContentArtifacts } from "./generate-content-index.mjs";
+
+export const BASE_COMMIT = "0322bfaac404c6dee7abc28ade7cdb0c40fe63f9";
+export const SOURCE_DOCUMENT = "docs/research/question-revisions-20261010.json";
+export const SOURCE_DOCUMENT_SHA256 = "55911860b8119523dd4778d1724a2e9faf70a49c03e66843bfbb6c7a45dd55c2";
+export const CONTENT_REVISION = "2026-10-10.1";
+export const TARGET_QIDS = ["A17", "A16", "A15", "A19", "B17", "A09", "B18", "A20", "B07"];
+export const BASELINE_QUESTION_HASHES = {
+  A17: "1a7cd3cff8795cdbdf6b690d83b238e1dbf587ec788b2235ea768716211d972e",
+  A16: "5de980942687a4d1510ec6c05e3e674c5ef5e93db388bc421d15bb7b9020ed5b",
+  A15: "6b373bfea542a89fccfea371e66b8aaea6dc76191fc8fac7be03a0b85b101e0e",
+  A19: "3ed0096153f7bbecd1892d27936d03f85154ee5ccd55ab8a196dd292512d77ec",
+  B17: "96f0b67fad13dce3da1c644873f41ec10250b937e2d1468c085a17f7b62a8da2",
+  A09: "5ef69615f834775126f3cb9590a81d6e299b041af0eec4196d75e8fb3bc31ce1",
+  B18: "aa5950cb071adfe129e696c71efcf4eed41fb82d55f852b58efb0a20252d8898",
+  A20: "4b0b4a62f69898ad30797c5144bd4263acad6eb26e451d995829f9d461073f1f",
+  B07: "1ee0aba60cafab5d727fc73dc1e719fe6038d59c6cd039ca87ca6f19f5fcf35d",
+};
+
+const MAP_FILE = "src/content/knowledge-map.source.json";
+const CHAPTER_FILE = "src/content/knowledge-chapters.source.json";
+const GENERATED_FILES = [
+  MAP_FILE,
+  CHAPTER_FILE,
+  "src/content/question-index.generated.json",
+  "src/content/topic-index.generated.json",
+  "src/content/content-manifest.generated.json",
+];
+const ROOT_KEYS = [
+  "schemaVersion", "revisionDate", "title", "repositoryBaseline", "originalQuestionSourceCommit",
+  "purpose", "previousExportRelationship", "contentReviewStatus", "validationStatus", "boundaries", "records",
+];
+const RECORD_KEYS = [
+  "qid", "title", "fullMarkdown", "revisionDate", "publishedAt", "validationStatus",
+  "originalThreadPermalink", "revisionPermalink", "sourceQuestionPermalink", "referenceUrls",
+  "contentReviewStatus", "provenance", "fullMarkdownSha256",
+];
+const PROVENANCE_KEYS = [
+  "channelId", "threadTimestamp", "revisionTimestamp", "source", "verifiedAt", "laterReplacementFound",
+  "threadReplyCount", "migrationDate", "migrationNotice", "migrationChanges", "originalDraftByteIdentityClaimed",
+  "parentContentReviewPassed", "repairReviewDate", "examplesExecuted", "normalization",
+];
+const MIGRATION_CHANGE_KEYS = ["id", "before", "after", "kind", "reason", "sources", "originalRestoredExactly"];
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function assertKeys(value, expected, label) {
+  assert(value && typeof value === "object" && !Array.isArray(value), label + " must be an object");
+  const actual = Object.keys(value).sort();
+  const allowed = [...expected].sort();
+  assert(JSON.stringify(actual) === JSON.stringify(allowed), label + " contains missing or unexpected fields");
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+function stable(value) {
+  if (Array.isArray(value)) return value.map(stable);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stable(value[key])]));
+  }
+  return value;
+}
+
+export function questionHash(question) {
+  return sha256(JSON.stringify(stable(question)));
+}
+
+export function normalizeMarkdown(record) {
+  const lines = record.fullMarkdown.replace(/\r\n/gu, "\n").split("\n");
+  const processOnly = /^修订版（2026-10-09）.*(?:尚未修改题库|全文已复核).*$/u;
+  const output = [];
+  let removedOpeningTitle = false;
+  for (const line of lines) {
+    if (!removedOpeningTitle && line.startsWith(record.qid + "｜")) {
+      removedOpeningTitle = true;
+      continue;
+    }
+    if (processOnly.test(line)) continue;
+    if (/^原讨论线程：/u.test(line)) continue;
+    if (/尚未替换 Slack 修订/u.test(line)) continue;
+    if (/没有修改题库/u.test(line)) continue;
+    if (/也没有修改已交付导出包或导入工具/u.test(line)) continue;
+    output.push(line);
+  }
+  const markdown = output.join("\n").replace(/^\n+|\n+$/gu, "");
+  assert(removedOpeningTitle, record.qid + " Markdown has no qid title line to normalize");
+  assert(markdown.trim(), record.qid + " Markdown is empty after normalization");
+  assert(/NOT_RUN/u.test(markdown), record.qid + " must retain its NOT_RUN statement");
+  return markdown;
+}
+
+export function extractCheckpoints(markdown, qid) {
+  const lines = markdown.split("\n");
+  const headingIndex = lines.findIndex((line) =>
+    /^[一二三四五六七八九十]+、/u.test(line) && /自评|检查点|判定标准/u.test(line));
+  assert(headingIndex >= 0, qid + " has no explicit self-assessment section");
+  let end = headingIndex + 1;
+  while (end < lines.length && !/^[一二三四五六七八九十]+、/u.test(lines[end])) end += 1;
+  const checkpoints = [];
+  for (let index = headingIndex + 1; index < end; index += 1) {
+    const item = lines[index].match(/^\s*(\d+)[.、）)]\s*(.*)$/u);
+    if (item) checkpoints.push(item[2]);
+    else if (checkpoints.length) checkpoints[checkpoints.length - 1] += "\n" + lines[index];
+  }
+  const cleaned = checkpoints.map((text) => text.trim()).filter(Boolean);
+  assert(cleaned.length > 0 && cleaned.length <= 20, qid + " self-assessment must contain 1–20 complete checks");
+  assert(cleaned.every((text) => text.length <= 2_000), qid + " contains a self-assessment check over 2,000 characters");
+  return cleaned;
+}
+
+function markdownToBlocks(markdown) {
+  const blocks = [];
+  let paragraph = [];
+  let code = null;
+  const flushParagraph = () => {
+    if (paragraph.length) blocks.push({ kind: "paragraph", text: paragraph.join("\n").trim() });
+    paragraph = [];
+  };
+  for (const line of markdown.split("\n")) {
+    const fence = line.match(/^\s*\x60\x60\x60([^\s\x60]*)\s*$/u);
+    if (fence && code === null) {
+      flushParagraph();
+      code = { language: fence[1] || "text", lines: [] };
+      continue;
+    }
+    if (fence && code) {
+      blocks.push({ kind: "code", language: code.language, text: code.lines.join("\n") });
+      code = null;
+      continue;
+    }
+    if (code) {
+      code.lines.push(line);
+      continue;
+    }
+    const heading = line.match(/^(#{1,6})\s+(.+)$/u);
+    if (heading) {
+      flushParagraph();
+      blocks.push({ kind: "heading", text: heading[2] });
+    } else if (!line.trim()) {
+      flushParagraph();
+    } else {
+      paragraph.push(line);
+    }
+  }
+  assert(code === null, "source Markdown contains an unclosed fenced code block");
+  flushParagraph();
+  return blocks;
+}
+
+function cleanMigrationNotice(notice) {
+  if (!notice) return null;
+  return notice
+    .replace(/本次迁移修正已通过完整内容复核，尚未替换 Slack 修订。/gu, "迁移修正通过完整内容复核。")
+    .replace(/迁移说明（2026-10-10）：/u, "")
+    .trim();
+}
+
+function buildProvenance(record) {
+  return {
+    document: SOURCE_DOCUMENT,
+    documentSha256: SOURCE_DOCUMENT_SHA256,
+    recordMarkdownSha256: record.fullMarkdownSha256,
+    revisionDate: record.revisionDate,
+    contentReviewStatus: record.contentReviewStatus,
+    validationStatus: record.validationStatus,
+    parentContentReviewPassed: record.provenance.parentContentReviewPassed,
+    originalDraftByteIdentityClaimed: record.provenance.originalDraftByteIdentityClaimed,
+    examplesExecuted: record.provenance.examplesExecuted,
+    migration: {
+      date: record.provenance.migrationDate,
+      notice: cleanMigrationNotice(record.provenance.migrationNotice),
+      changes: record.provenance.migrationChanges.map(({ id, kind, reason, originalRestoredExactly }) => ({
+        id, kind, reason, originalRestoredExactly,
+      })),
+      repairReviewDate: record.provenance.repairReviewDate,
+    },
+  };
+}
+
+function validateDocument(document, rawBytes) {
+  assertKeys(document, ROOT_KEYS, "research document");
+  assert(document.schemaVersion === "frontend-atlas-question-revision-research/v1", "unsupported research document schema");
+  assert(document.repositoryBaseline === BASE_COMMIT, "research document targets a different repository baseline");
+  assert(document.contentReviewStatus === "PARENT_CONTENT_REVIEW_PASSED", "parent full-content review is not recorded");
+  assert(document.validationStatus === "NOT_RUN", "research validation status changed unexpectedly");
+  assert(Array.isArray(document.records) && document.records.length === TARGET_QIDS.length, "research document must contain exactly nine records");
+  const seen = new Set();
+  for (const record of document.records) {
+    assertKeys(record, RECORD_KEYS, "record " + (record.qid || "unknown"));
+    assert(TARGET_QIDS.includes(record.qid), "unknown qid in research document: " + record.qid);
+    assert(!seen.has(record.qid), "duplicate qid in research document: " + record.qid);
+    seen.add(record.qid);
+    assert(typeof record.fullMarkdown === "string" && record.fullMarkdown.trim(), record.qid + " Markdown is empty");
+    assert(sha256(Buffer.from(record.fullMarkdown, "utf8")) === record.fullMarkdownSha256, record.qid + " Markdown SHA-256 mismatch");
+    assert(record.validationStatus === "NOT_RUN", record.qid + " has unexpected execution status");
+    assert(record.contentReviewStatus === "PARENT_CONTENT_REVIEW_PASSED", record.qid + " is not fully reviewed");
+    assertKeys(record.provenance, PROVENANCE_KEYS, record.qid + " provenance");
+    assert(Array.isArray(record.provenance.migrationChanges), record.qid + " migrationChanges must be an array");
+    assert(record.provenance.parentContentReviewPassed === true, record.qid + " is not recorded as fully reviewed");
+    assert(record.provenance.originalDraftByteIdentityClaimed === false, record.qid + " must not claim original-byte recovery");
+    assert(record.provenance.examplesExecuted === false, record.qid + " examples must remain NOT_RUN");
+    for (const change of record.provenance.migrationChanges) assertKeys(change, MIGRATION_CHANGE_KEYS, record.qid + " migration change");
+    if (record.qid === "B07" || record.qid === "B17") {
+      assert(record.provenance.parentContentReviewPassed === true, record.qid + " requires parent full-content review");
+    }
+  }
+  assert([...seen].sort().join(",") === [...TARGET_QIDS].sort().join(","), "research document qid set does not match the approved nine");
+  assert(sha256(rawBytes) === SOURCE_DOCUMENT_SHA256, "research document SHA-256 mismatch");
+}
+
+function locateQuestion(map, qid) {
+  const matches = map.master_questions.filter((question) => question.qid === qid);
+  assert(matches.length === 1, qid + " must identify exactly one canonical master question");
+  return matches[0];
+}
+
+function recordIsApplied(question, record, markdown, checkpoints, title) {
+  return question.content_revision === CONTENT_REVISION
+    && question.title === title
+    && JSON.stringify(question.content) === JSON.stringify(markdownToBlocks(markdown))
+    && question.explanation_markdown === markdown
+    && JSON.stringify(question.checkpoints) === JSON.stringify(checkpoints)
+    && JSON.stringify(question.source?.revisionProvenance) === JSON.stringify(buildProvenance(record));
+}
+
+export function prepareRevisionBatch({ rootDir, sourcePath } = {}) {
+  const root = path.resolve(rootDir || path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+  const inputPath = path.resolve(sourcePath || path.join(root, SOURCE_DOCUMENT));
+  const raw = fs.readFileSync(inputPath);
+  const document = JSON.parse(raw.toString("utf8"));
+  validateDocument(document, raw);
+  const mapPath = path.join(root, MAP_FILE);
+  const chapterPath = path.join(root, CHAPTER_FILE);
+  const map = JSON.parse(fs.readFileSync(mapPath, "utf8"));
+  const chapters = JSON.parse(fs.readFileSync(chapterPath, "utf8"));
+  const plan = [];
+  for (const record of document.records) {
+    const question = locateQuestion(map, record.qid);
+    const markdown = normalizeMarkdown(record);
+    const checkpoints = extractCheckpoints(markdown, record.qid);
+    const title = record.title.replace(new RegExp("^" + record.qid + "[｜|]\\s*"), "");
+    assert(title, record.qid + " title is empty");
+    const currentlyApplied = recordIsApplied(question, record, markdown, checkpoints, title);
+    const currentHash = questionHash(question);
+    if (!currentlyApplied && currentHash !== BASELINE_QUESTION_HASHES[record.qid]) {
+      throw new Error(record.qid + " baseline mismatch; refusing to overwrite a newer or divergent question");
+    }
+    if (!currentlyApplied) {
+      assert(question.content_revision === undefined, record.qid + " has an unexpected content revision");
+      assert(Array.isArray(question.content) && question.content.length > 0, record.qid + " baseline content is missing");
+    }
+    plan.push({ record, question, markdown, checkpoints, title, currentHash, alreadyApplied: currentlyApplied });
+  }
+  for (const item of plan) {
+    const references = chapters.chapters.flatMap((chapter) => chapter.question_references || []).filter((reference) => reference.qid === item.record.qid);
+    assert(references.length === 1, item.record.qid + " must have exactly one chapter question reference");
+    if (item.alreadyApplied) assert(references[0].title === item.title, item.record.qid + " chapter reference differs from the applied title");
+  }
+  return { root, map, chapters, plan, allAlreadyApplied: plan.every((item) => item.alreadyApplied) };
+}
+
+function applyPlan(prepared) {
+  const { chapters, plan } = prepared;
+  if (prepared.allAlreadyApplied) return prepared;
+  for (const item of plan) {
+    if (item.alreadyApplied) continue;
+    const { question, record, markdown, checkpoints, title } = item;
+    question.title = title;
+    question.content = markdownToBlocks(markdown);
+    question.explanation_markdown = markdown;
+    question.checkpoints = checkpoints;
+    question.content_revision = CONTENT_REVISION;
+    question.source = {
+      ...question.source,
+      revisionProvenance: buildProvenance(record),
+    };
+    let references = 0;
+    for (const chapter of chapters.chapters) {
+      for (const reference of chapter.question_references || []) {
+        if (reference.qid === record.qid) {
+          reference.title = title;
+          references += 1;
+        }
+      }
+    }
+    assert(references === 1, record.qid + " must have exactly one chapter question reference");
+  }
+  return prepared;
+}
+
+function writeJson(filePath, value) {
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n");
+}
+
+function installArtifacts(root, stageDir, candidateDir, failAfterRenames = null) {
+  const backupDir = path.join(stageDir, "backup");
+  fs.mkdirSync(backupDir);
+  for (const file of GENERATED_FILES) {
+    const original = path.join(root, file);
+    fs.copyFileSync(original, path.join(backupDir, path.basename(file)));
+  }
+  const moved = [];
+  try {
+    for (const [index, file] of GENERATED_FILES.entries()) {
+      const destination = path.join(root, file);
+      const backup = path.join(backupDir, path.basename(file));
+      const candidate = path.join(candidateDir, path.basename(file));
+      fs.renameSync(destination, path.join(backupDir, "installed-" + index));
+      moved.push({ destination, backup });
+      fs.renameSync(candidate, destination);
+      if (failAfterRenames === index + 1) throw new Error("simulated atomic install failure");
+    }
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const item of moved.reverse()) {
+      try {
+        if (fs.existsSync(item.destination)) fs.rmSync(item.destination);
+        if (fs.existsSync(item.backup)) fs.renameSync(item.backup, item.destination);
+      } catch (rollbackError) {
+        rollbackErrors.push(rollbackError);
+      }
+    }
+    if (rollbackErrors.length) throw new Error("install failed and rollback was incomplete; recover from backup at " + backupDir + ": " + rollbackErrors.map((item) => item.message).join("; "));
+    throw error;
+  }
+}
+
+export function applyRevisionBatch({ rootDir, sourcePath, failAfterRenamesForTest = null } = {}) {
+  const prepared = prepareRevisionBatch({ rootDir, sourcePath });
+  if (prepared.allAlreadyApplied) return { status: "already-applied", qids: TARGET_QIDS, writtenFiles: [] };
+  applyPlan(prepared);
+  const { root, map, chapters } = prepared;
+  const stageDir = fs.mkdtempSync(path.join(root, ".question-revisions-stage-"));
+  try {
+    const candidateDir = path.join(stageDir, "content");
+    fs.cpSync(path.join(root, "src/content"), candidateDir, { recursive: true });
+    writeJson(path.join(candidateDir, "knowledge-map.source.json"), map);
+    writeJson(path.join(candidateDir, "knowledge-chapters.source.json"), chapters);
+    generateContentArtifacts({ contentDir: candidateDir, writeFiles: true });
+    for (const file of GENERATED_FILES) {
+      const candidate = path.join(candidateDir, path.basename(file));
+      assert(fs.existsSync(candidate), "candidate generation omitted " + file);
+    }
+    installArtifacts(root, stageDir, candidateDir, failAfterRenamesForTest);
+  } catch (error) {
+    if (!(error instanceof Error) || !error.message.includes("rollback was incomplete")) {
+      fs.rmSync(stageDir, { recursive: true, force: true });
+    }
+    throw error;
+  }
+  fs.rmSync(stageDir, { recursive: true, force: true });
+  return { status: "applied", qids: TARGET_QIDS, writtenFiles: GENERATED_FILES };
+}
+
+function parseArgs(args) {
+  const options = { apply: false, rootDir: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."), sourcePath: null };
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--apply") options.apply = true;
+    else if (args[index] === "--root" && args[index + 1]) options.rootDir = path.resolve(args[++index]);
+    else if (args[index] === "--source" && args[index + 1]) options.sourcePath = path.resolve(args[++index]);
+    else throw new Error("usage: node scripts/apply-question-revisions.mjs [--apply] [--root DIR] [--source FILE]");
+  }
+  return options;
+}
+
+function main() {
+  const options = parseArgs(process.argv.slice(2));
+  const prepared = prepareRevisionBatch(options);
+  if (prepared.allAlreadyApplied) {
+    console.log(JSON.stringify({ mode: options.apply ? "apply" : "dry-run", status: "already-applied", qids: TARGET_QIDS }));
+    return;
+  }
+  if (!options.apply) {
+    console.log(JSON.stringify({ mode: "dry-run", status: "validated", qids: TARGET_QIDS, plannedFiles: GENERATED_FILES }));
+    return;
+  }
+  console.log(JSON.stringify({ mode: "apply", ...applyRevisionBatch(options) }));
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "question revision import failed");
+    process.exitCode = 1;
+  }
+}

@@ -30,6 +30,8 @@
     "test:question-review": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-question-review.mjs",
     "test:question-publication": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-question-publication.mjs",
     "test:question-review-migration": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-question-review-migration.mjs",
+    "question:revisions": "node scripts/apply-question-revisions.mjs",
+    "test:question-revisions": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-question-revisions.mjs",
     "test:question-overrides-browser": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-question-private-overrides-browser.mjs",
     "test:question-review-browser": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-question-review-browser.mjs",
     "test:coach-account-browser": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-coach-account-browser.mjs",

@@ -1,0 +1,755 @@
+{
+  "questions": [
+    {
+      "qid": "B07",
+      "title": "XSS 为什么不能只靠过滤 script 标签解决？如何按数据进入页面的位置进行防御？",
+      "primary": "浏览器、网络与安全",
+      "subtopic": "身份、注入与嵌入安全",
+      "tags": [
+        "XSS",
+        "安全输出",
+        "HTML净化"
+      ],
+      "mode": "advanced",
+      "prerequisites": [],
+      "topic_id": "K15",
+      "source": {
+        "filename": "03_浏览器网络与安全.docx",
+        "library_file_id": "libfile_6d632600277c8191956f81885f71130e",
+        "version": 3,
+        "sha256": "b54aab56ce35931922452280b072f38c0b8248e510a9cfd6a39b859a2a133ab6",
+        "bookmark": "B07"
+      },
+      "original_metadata": "B07  P0 · 高级 · 知识",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. XSS 的关键是把不可信数据解释成可执行内容；攻击入口不止 script 标签，还可能来自事件属性、危险 URL 或 DOM 注入。应追踪数据来源与最终写入点。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. 展示纯文本优先使用 textContent 等安全接口；不同输出上下文需要对应编码，HTML 文本、属性、URL 和脚本上下文不能共享一个万能转义函数。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. 确需富文本时使用维护良好的 HTML 清洗方案并限制允许内容，清洗后再拼接危险 HTML 可能重新引入漏洞。避免把未经处理的字符串直接交给 innerHTML。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. CSP 可通过 nonce、hash 等收紧脚本执行范围，作为纵深防御；它不能替代安全输出。上线时还要检查第三方脚本、宽泛白名单和过度使用 unsafe-inline 等配置。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  只删除 script 字样或统一做 HTML 转义，就认为所有 DOM、URL 和脚本注入风险都消失。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  textContent 为什么比手工替换后写入 innerHTML 稳妥？前者让数据保持文本，后者会重新进入 HTML 解析器，少处理一种上下文就可能留下执行入口。反例：HTML 转义不能把 href 中的 javascript: 变成安全链接，URL 还需按业务限制协议与目标；富文本才进入经过维护的净化器。测试应覆盖文本、属性、链接和富文本四种写入点；框架默认文本转义不能为危险 HTML 注入接口兜底。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  OWASP：XSS 防御指南  ·  MDN：内容安全策略 CSP",
+          "links": [
+            {
+              "label": "OWASP：XSS 防御指南",
+              "target": "https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html"
+            },
+            {
+              "label": "MDN：内容安全策略 CSP",
+              "target": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_B07"
+    },
+    {
+      "qid": "B17",
+      "title": "页面需要 SharedArrayBuffer 时，怎样启用跨源隔离，又为何会破坏第三方资源或登录弹窗？",
+      "primary": "浏览器、网络与安全",
+      "subtopic": "跨源通信与隔离",
+      "tags": [
+        "COOP",
+        "COEP",
+        "SharedArrayBuffer"
+      ],
+      "mode": "scenario",
+      "prerequisites": [
+        "B05"
+      ],
+      "topic_id": "K14",
+      "source": {
+        "filename": "03_浏览器网络与安全.docx",
+        "library_file_id": "libfile_6d632600277c8191956f81885f71130e",
+        "version": 3,
+        "sha256": "b54aab56ce35931922452280b072f38c0b8248e510a9cfd6a39b859a2a133ab6",
+        "bookmark": "B17"
+      },
+      "original_metadata": "B17  P1 · 进阶 · 场景",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. 共享内存能力不能只靠检测某个构造函数。浏览器环境通常需要安全上下文及跨源隔离，常见部署组合是 COOP:same-origin 与 COEP:require-corp，并以 crossOriginIsolated 检查实际结果。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. COOP 影响页面与其他窗口的浏览上下文组关系，可能切断 opener 通道，使依赖弹窗互相通信的登录流程失效。它不是 CORS，也不直接表示任意跨源接口都能读取。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. COEP 收紧跨源资源嵌入要求，相关资源须通过适当 CORS 或 CORP 授权。图片、脚本和 iframe 都应盘点；credentialless 是另一种策略，涉及凭据行为与兼容差异，不能机械替换。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. 隔离成功也不代表并发读写自动安全，仍需设计 Atomics 同步与数据协议。先验证权限策略、资源链和弹窗，再提供无共享内存降级；不要为开启功能就无限放宽所有资源的跨源权限。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  把 COOP/COEP 当作解除同源限制的开关，或只改主文档响应头而不检查第三方资源。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  依赖 opener 的登录流程与隔离工作台冲突时，可先在独立的非隔离入口完成认证，再通过顶层导航进入满足隔离头要求的工作台；或改用不依赖弹窗 opener 的重定向式授权流程。认证结果由服务端会话核验，不把弹窗消息直接当作授权。不能简单改成较宽松的 COOP 后仍声称 SharedArrayBuffer 条件不变；验收真实 crossOriginIsolated、第三方资源与完整登录／退出流程，无法兼容时提供非共享内存方案。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  MDN：Cross-Origin-Opener-Policy  ·  MDN：Cross-Origin-Embedder-Policy  ·  MDN：SharedArrayBuffer 安全要求",
+          "links": [
+            {
+              "label": "MDN：Cross-Origin-Opener-Policy",
+              "target": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Opener-Policy"
+            },
+            {
+              "label": "MDN：Cross-Origin-Embedder-Policy",
+              "target": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Cross-Origin-Embedder-Policy"
+            },
+            {
+              "label": "MDN：SharedArrayBuffer 安全要求",
+              "target": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/SharedArrayBuffer"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_B17"
+    },
+    {
+      "qid": "B18",
+      "title": "IndexedDB 升级卡在 blocked，或者 await 网络后事务失效，分别是什么原因？",
+      "primary": "浏览器、网络与安全",
+      "subtopic": "本地数据与流式处理",
+      "tags": [
+        "IndexedDB",
+        "versionchange",
+        "事务"
+      ],
+      "mode": "scenario",
+      "prerequisites": [
+        "B02",
+        "B09"
+      ],
+      "topic_id": "K16",
+      "source": {
+        "filename": "03_浏览器网络与安全.docx",
+        "library_file_id": "libfile_6d632600277c8191956f81885f71130e",
+        "version": 3,
+        "sha256": "b54aab56ce35931922452280b072f38c0b8248e510a9cfd6a39b859a2a133ab6",
+        "bookmark": "B18"
+      },
+      "original_metadata": "B18  P1 · 进阶 · 场景",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. 数据库升版本时需要 versionchange 事务；如果其他标签页还持有旧连接，新升级会被阻塞。旧连接应监听 versionchange 并适时关闭，新页面处理 blocked，提示保存工作或关闭旧页，而不是无限重试创建数据库。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. IndexedDB 事务只在特定事件循环阶段保持活动，所有请求完成且没有继续加入请求时可能自动提交。在事务中 await 与数据库无关的网络任务，恢复时事务可能已不再活动，后续写入会失败。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. 应先完成网络与计算，再开启范围尽量小的读写事务；需要原子更新的相关数据库操作放在同一事务中。单个请求 success 不代表整个事务最终提交成功，应以事务 complete 或 abort 判断整体结果。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. 例如离线队列更新状态与写入结果要一起提交，失败时可整体回滚。迁移还需考虑旧代码连接、失败恢复和存储配额，不能仅在只有一个标签页的开发环境测试升级。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  把请求成功当作事务已持久提交，或认为事务可以跨任意 await 永远保持。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  大量迁移怎样避免长期阻塞？先在短 versionchange 事务完成必须的 schema 变更，再按数据版本或迁移游标分批转换，记录已完成进度；新旧格式并存期间，读写代码必须兼容。反例：把所有转换挪到普通事务却没有记录格式版本，会让旧记录被新代码误读。检查点：中途关闭标签页后能从已提交进度继续，单批失败不把半批数据当完成。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  MDN：使用 IndexedDB",
+          "links": [
+            {
+              "label": "MDN：使用 IndexedDB",
+              "target": "https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API/Using_IndexedDB"
+            }
+          ]
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方核验  MDN Using IndexedDB（2026年10月4日）",
+          "links": [
+            {
+              "label": "官方核验  MDN Using IndexedDB（2026年10月4日）",
+              "target": "https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API/Using_IndexedDB"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_B18"
+    },
+    {
+      "qid": "A09",
+      "title": "前端直连模型接口很方便，为什么生产系统通常需要 BFF？代理层还必须做哪些事？",
+      "primary": "AI应用工程",
+      "subtopic": "安全、权限与可信输出",
+      "tags": [
+        "BFF",
+        "密钥",
+        "短期凭据"
+      ],
+      "mode": "scenario",
+      "prerequisites": [
+        "E01",
+        "D26"
+      ],
+      "topic_id": "K33",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A09"
+      },
+      "original_metadata": "A09  P0 · 进阶 · 场景",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. 长期模型 API 密钥不能放入浏览器包、公开环境变量或 localStorage；用户可读取客户端代码与网络请求。通常由服务端 BFF 保管密钥，前端使用应用自己的身份认证调用受限接口。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. BFF 不是无条件转发器，需要校验用户与租户、限制模型和工具、输入大小、并发与费用，并防止任意上游 URL 被滥用。允许浏览器调用 BFF 并不等于允许匿名用户无限消耗后端额度。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. 流式代理应正确传播取消、超时和错误，避免缓冲整段响应破坏首字延迟；日志与错误消息不能暴露上游密钥。服务间调用、秘密轮换与最小权限也需按部署环境配置。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. 例如文档问答接口只接受授权文档 ID，由后端读取与检索，而不是相信浏览器传来的任意租户和系统提示。验收越权、超大请求、并发刷接口、前端断开以及密钥轮换后的行为。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  以为把密钥 base64 编码或藏在打包环境变量里就能保密，或代理存在就自动安全。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  基础：服务支持浏览器直连时，应由已鉴权后端签发或申请短期会话凭据，长期密钥始终留在服务端，并限制签发频率与用户额度。进阶：核对提供方真正支持的到期、会话和能力限制；短期不等于只能用一次，也不等于费用已封顶。工具调用仍由受控服务端校验执行，凭据到期与已建立会话能否继续要分别验证。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  OpenAI：Production Best Practices",
+          "links": [
+            {
+              "label": "OpenAI：Production Best Practices",
+              "target": "https://developers.openai.com/api/docs/guides/production-best-practices"
+            }
+          ]
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方核验  OpenAI WebRTC 短期凭据流程",
+          "links": [
+            {
+              "label": "官方核验  OpenAI WebRTC 短期凭据流程",
+              "target": "https://developers.openai.com/api/docs/guides/voice-webrtc?voice-api=realtime"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_A09"
+    },
+    {
+      "qid": "A15",
+      "title": "RAG 回答末尾有引用列表，为什么仍可能是幻觉？前端如何让引用可核查？",
+      "primary": "AI应用工程",
+      "subtopic": "安全、权限与可信输出",
+      "tags": [
+        "RAG",
+        "引用",
+        "证据"
+      ],
+      "mode": "scenario",
+      "prerequisites": [
+        "A08",
+        "E30"
+      ],
+      "topic_id": "K33",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A15"
+      },
+      "original_metadata": "A15  P0 · 高级 · 场景",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. 存在引用不代表每个结论都由引用支持。检索命中、片段相关性、模型归纳和引文映射是不同环节，应让重要断言关联具体来源位置，而不是在整篇答案底部堆几个看似权威的链接。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. 后端应返回稳定来源 ID、标题、版本及可定位片段，前端按可信元数据渲染，不让模型任意编造文件 URL。引用应支持打开上下文，并明确区分直接依据、推断与无法确认的内容。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. 访问控制在检索前和文档打开时都要生效，缓存检索结果也需隔离租户和权限。删除或撤权后旧引用可能失效，应给出清楚状态而非绕过权限提供历史全文。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. 评估包括检索召回、答案正确性与引用支持度，专门测试相似标题、过期政策和互相冲突的文档。例如问题要求今年制度，命中去年的说明即便引用真实，也不能算正确回答。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  把有链接等同于有证据，或认为向量相似度高就证明答案真实。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  基础：两份资料冲突时同时展示具体版本、生效日期和冲突点，不擅自合成一条确定结论。进阶：按业务明确的效力与版本规则选取适用资料；如果无规则或证据不足，指出待确认项。评分检查：链接真实但引用段落不支持该断言，仍应判证据失败；检索相似度不能替代适用性与支持度。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  OpenAI：File Search",
+          "links": [
+            {
+              "label": "OpenAI：File Search",
+              "target": "https://developers.openai.com/api/docs/guides/tools-file-search"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_A15"
+    },
+    {
+      "qid": "A16",
+      "title": "聊天支持编辑旧问题、重新生成和多设备继续，如何设计多轮状态而不是一条 messages 数组？",
+      "primary": "AI应用工程",
+      "subtopic": "流式协议与会话状态",
+      "tags": [
+        "会话分支",
+        "版本",
+        "审计"
+      ],
+      "mode": "scenario",
+      "prerequisites": [
+        "D08",
+        "A04"
+      ],
+      "topic_id": "K32",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A16"
+      },
+      "original_metadata": "A16  P0 · 高级 · 场景",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. 会话需要稳定的 messageId、parentId、runId 和版本，以区分历史分支与同一问题的多次生成。编辑旧问题通常创建新分支，不能简单覆盖旧文本后继续沿用所有下游回答和工具结果。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. 服务器保存授权后的会话事实与运行状态，客户端负责展示和乐观操作。多个设备并发写入时应通过版本检查或明确合并规则解决冲突，不能按最后收到的响应盲目覆盖全部历史。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. 上下文窗口有限，需要明确保留哪些消息、摘要与工具结果；摘要可能丢失细节，不能把它当作绝对事实。使用服务商的会话状态能力时，也要核对保留策略、数据控制与费用，不假设传一个前序 ID 就没有上下文成本。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. 测试编辑祖先消息、删除分支、两个设备同时发送、重新生成后切回旧答案以及工具结果关联。对于已执行的外部动作，修改聊天历史不会撤销现实效果，应独立保留业务执行记录。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  用数组下标作为消息身份，或认为重新生成可以覆盖已经执行过的外部动作。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  删除聊天消息先定义是隐藏该分支、删除可恢复内容，还是发起数据删除流程；不能将 UI 移除等同于撤销邮件或订单。必要执行记录应按目的、访问控制和保留规则独立保存，仅保留核对操作所需的关联信息；不能以审计为由无限复制全部正文。若要撤销现实操作，应创建新的受授权业务动作，并在界面说明可撤销性与结果。测试删除后多设备同步、仍运行的生成及已完成工具回执归属。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  OpenAI：Conversation State",
+          "links": [
+            {
+              "label": "OpenAI：Conversation State",
+              "target": "https://developers.openai.com/api/docs/guides/conversation-state"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_A16"
+    },
+    {
+      "qid": "A17",
+      "title": "模型正在流式输出 JSON 表单，前端是否可以边解析边提交？如何处理拒绝和截断？",
+      "primary": "AI应用工程",
+      "subtopic": "流式协议与会话状态",
+      "tags": [
+        "JSON",
+        "拒绝",
+        "表单合并"
+      ],
+      "mode": "scenario",
+      "prerequisites": [
+        "A03",
+        "A05"
+      ],
+      "topic_id": "K32",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A17"
+      },
+      "original_metadata": "A17  P0 · 进阶 · 场景",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. 流式片段可以用于临时展示，但在完整响应结束前通常不能证明对象已完整、通过 schema 或满足业务规则。不要把尚未闭合的 JSON 修补成看似有效对象后直接提交真实操作。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. 结构化输出只在所用 API 支持的模式与 schema 范围内约束格式；仍须分别处理拒绝、长度上限、断流和不完整终态。拒绝可能通过独立字段或内容类型返回，不一定符合业务对象 schema。只有完整终态、无拒绝且通过结构与服务端业务校验，才可进入确认或提交阶段；日期、权限和金额仍需验证。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. UI 可把已解析字段标为草稿或生成中，终态确认后展示可编辑表单与校验结果。若生成失败，保留可供恢复的内容，但不要把半成品标成已保存；重试与用户手工修改要有冲突规则。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. 测试缺少必填字段、枚举异常、拒绝、超长输出、流中断和恢复。比如旅行规划 JSON 中出现不存在的日期，即使是合法字符串，也不能直接创建日历事件。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  以 JSON.parse 成功作为业务合法性证明，或静默补齐模型未生成的字段。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  基础：用户已手工修改的字段应标记为用户所有，后续模型增量不能静默覆盖；模型值可作为候选差异供用户选择。进阶：用表单版本与字段 dirty 状态合并，重试生成也保留来源；最终提交时再按最新表单做服务端校验。完整 JSON、合法 schema 和用户已确认是三道不同条件，不能互相替代。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  OpenAI：Structured Model Outputs",
+          "links": [
+            {
+              "label": "OpenAI：Structured Model Outputs",
+              "target": "https://developers.openai.com/api/docs/guides/structured-outputs"
+            }
+          ]
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方核验  OpenAI 结构化输出的拒绝与不完整处理",
+          "links": [
+            {
+              "label": "官方核验  OpenAI 结构化输出的拒绝与不完整处理",
+              "target": "https://developers.openai.com/api/docs/guides/structured-outputs"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_A17"
+    },
+    {
+      "qid": "A19",
+      "title": "用户把合同、截图和录音上传到 AI 产品，前端需要承担哪些隐私与文件处理设计？",
+      "primary": "AI应用工程",
+      "subtopic": "安全、权限与可信输出",
+      "tags": [
+        "上传",
+        "隐私",
+        "数据生命周期"
+      ],
+      "mode": "scenario",
+      "prerequisites": [
+        "D07",
+        "A07"
+      ],
+      "topic_id": "K33",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A19"
+      },
+      "original_metadata": "A19  P1 · 高级 · 场景",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. 上传前清楚说明文件将发往哪些处理方、用于什么任务及保留规则，避免默认把整份历史会话或无关文件一并发送。前端可帮助最小化数据，但服务端仍须验证文件归属和访问权限。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. 文件类型、大小、页数与实际内容都应校验，不能只相信扩展名。预览和提取过程应隔离不可信内容，OCR 或文档文本中出现的指令仍视为数据，不能变成工具授权。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. 产品删除操作应明确覆盖上传对象、派生文本、检索索引与会话引用的范围，并遵守所用服务的数据控制能力。前端从列表隐藏文件，不代表上游存储已删除，也不能承诺未经核实的即时清除。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. 测试上传取消、网络重试、处理失败、跨账号引用和删除后继续访问。例子是合同摘要只提交必要附件，诊断日志只保留处理状态与关联 ID，不复制完整合同正文来排查失败。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  认为用户上传文件就授权所有后续用途，或把 UI 删除成功等同于所有存储已清除。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  删除按钮应区分“移除此会话引用”和“从账户删除文件及派生数据”，列明受影响会话，并在确认前说明是否会使历史引用不可打开。共享对象按真实所有权与权限处理，不能让一个引用的删除清空别人仍有权使用的文件。服务端用引用/依赖记录编排删除与索引清理，UI 区分已请求、处理中和已完成；验证删后检索、直接访问与旧缓存，备份或供应商保留限制应如实说明。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  OpenAI：Data Controls",
+          "links": [
+            {
+              "label": "OpenAI：Data Controls",
+              "target": "https://developers.openai.com/api/docs/guides/your-data"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_A19"
+    },
+    {
+      "qid": "A20",
+      "title": "AI 功能灰度后出现偶发错误工具调用，如何定位、止损并验证修复？",
+      "primary": "AI应用工程",
+      "subtopic": "评估与生产运营",
+      "tags": [
+        "事故",
+        "轨迹评估",
+        "确认绑定"
+      ],
+      "mode": "scenario",
+      "prerequisites": [
+        "A06",
+        "A12"
+      ],
+      "topic_id": "K34",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A20"
+      },
+      "original_metadata": "A20  P1 · 高级 · 场景",
+      "content": [
+        {
+          "kind": "paragraph",
+          "text": "1. 先限制受影响工具或关闭相关写操作，保留只读与人工可完成路径。问题调查要以真实执行记录和用户影响为准，不能仅凭模型最终文字判断动作是否发生，也不能为了收集更多样本继续放任高风险执行。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "2. 沿一次运行的轨迹检查提示版本、检索内容、工具参数、授权决策、执行结果和 UI 显示，确定失败来自模型建议、校验缺失、确认绑定还是重复重试。必要时把问题拆成多个独立缺陷。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "3. 将脱敏后的失败路径加入回归集，同时加入相邻边界与对抗样例，验证修复没有只是记住某一句输入。可用轨迹级评估观察中间决策，不只给最终答案打分。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "4. 恢复发布时采用小流量、明确止损阈值与可回退配置，检查严重错误率、正常任务成功率和人工介入量。若已经产生外部错误动作，还需单独处理业务补救，修复提示词不会自动撤销后果。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "常见误区  只修改提示词并用原例试一次就全量恢复，未检查授权和执行链路。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "分层追问  基础：模型选对工具但确认摘要错了，仍是端到端安全缺陷。测试应构造固定候选操作，核对 UI 摘要、批准的版本或摘要、服务端最终参数与执行回执一致。进阶：在确认后修改目标并重放旧批准，必须拒绝；也要测试本地化金额、截断收件人和附件省略。只断言模型工具名正确或按钮被点击，不算通过。",
+          "links": []
+        },
+        {
+          "kind": "paragraph",
+          "text": "官方参考  OpenAI：Trace Grading",
+          "links": [
+            {
+              "label": "OpenAI：Trace Grading",
+              "target": "https://developers.openai.com/api/docs/guides/trace-grading"
+            }
+          ]
+        }
+      ],
+      "index_anchor": "IDX_A20"
+    }
+  ],
+  "references": [
+    {
+      "qid": "B17",
+      "title": "页面需要 SharedArrayBuffer 时，怎样启用跨源隔离，又为何会破坏第三方资源或登录弹窗？",
+      "source": {
+        "filename": "03_浏览器网络与安全.docx",
+        "library_file_id": "libfile_6d632600277c8191956f81885f71130e",
+        "version": 3,
+        "sha256": "b54aab56ce35931922452280b072f38c0b8248e510a9cfd6a39b859a2a133ab6",
+        "bookmark": "B17"
+      }
+    },
+    {
+      "qid": "B07",
+      "title": "XSS 为什么不能只靠过滤 script 标签解决？如何按数据进入页面的位置进行防御？",
+      "source": {
+        "filename": "03_浏览器网络与安全.docx",
+        "library_file_id": "libfile_6d632600277c8191956f81885f71130e",
+        "version": 3,
+        "sha256": "b54aab56ce35931922452280b072f38c0b8248e510a9cfd6a39b859a2a133ab6",
+        "bookmark": "B07"
+      }
+    },
+    {
+      "qid": "B18",
+      "title": "IndexedDB 升级卡在 blocked，或者 await 网络后事务失效，分别是什么原因？",
+      "source": {
+        "filename": "03_浏览器网络与安全.docx",
+        "library_file_id": "libfile_6d632600277c8191956f81885f71130e",
+        "version": 3,
+        "sha256": "b54aab56ce35931922452280b072f38c0b8248e510a9cfd6a39b859a2a133ab6",
+        "bookmark": "B18"
+      }
+    },
+    {
+      "qid": "A16",
+      "title": "聊天支持编辑旧问题、重新生成和多设备继续，如何设计多轮状态而不是一条 messages 数组？",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A16"
+      }
+    },
+    {
+      "qid": "A17",
+      "title": "模型正在流式输出 JSON 表单，前端是否可以边解析边提交？如何处理拒绝和截断？",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A17"
+      }
+    },
+    {
+      "qid": "A09",
+      "title": "前端直连模型接口很方便，为什么生产系统通常需要 BFF？代理层还必须做哪些事？",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A09"
+      }
+    },
+    {
+      "qid": "A15",
+      "title": "RAG 回答末尾有引用列表，为什么仍可能是幻觉？前端如何让引用可核查？",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A15"
+      }
+    },
+    {
+      "qid": "A19",
+      "title": "用户把合同、截图和录音上传到 AI 产品，前端需要承担哪些隐私与文件处理设计？",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A19"
+      }
+    },
+    {
+      "qid": "A20",
+      "title": "AI 功能灰度后出现偶发错误工具调用，如何定位、止损并验证修复？",
+      "source": {
+        "filename": "07_AI应用与2026技术专题.docx",
+        "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
+        "version": 2,
+        "sha256": "4d9ecc654533d99f859786e90dca59532535bc8ca7794a1248d76d2758861064",
+        "bookmark": "A20"
+      }
+    }
+  ]
+}

@@ -360,7 +360,7 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .checkpoint-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, .65fr); align-items: start; gap: 1rem; border-bottom: 1px solid #e6eae5; padding: .85rem .2rem; }
 .checkpoint-copy { display: flex; align-items: flex-start; gap: .75rem; min-width: 0; }
 .checkpoint-number { flex: 0 0 auto; color: #426653; font-family: var(--font-mono); font-size: .8rem; font-weight: 700; }
-.checkpoint-copy strong { display: block; color: #344b3e; font-size: .88rem; font-weight: 600; line-height: 1.6; }
+.checkpoint-copy strong { display: block; color: #344b3e; font-size: .88rem; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
 .checkpoint-copy details { margin-top: .3rem; color: #6a7970; font-size: .78rem; }
 .checkpoint-copy summary { cursor: pointer; color: #547462; }
 .checkpoint-copy details p { margin: .3rem 0 0; line-height: 1.6; white-space: pre-wrap; }

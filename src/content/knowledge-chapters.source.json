@@ -7034,7 +7034,7 @@
         },
         {
           "qid": "A16",
-          "title": "聊天支持编辑旧问题、重新生成和多设备继续，如何设计多轮状态而不是一条 messages 数组？",
+          "title": "编辑旧问题、重新生成、多设备继续，聊天状态该怎么建模？",
           "source": {
             "filename": "07_AI应用与2026技术专题.docx",
             "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",
@@ -7275,7 +7275,7 @@
         },
         {
           "qid": "A15",
-          "title": "RAG 回答末尾有引用列表，为什么仍可能是幻觉？前端如何让引用可核查？",
+          "title": "回答带了引用，为什么仍可能不可信？",
           "source": {
             "filename": "07_AI应用与2026技术专题.docx",
             "library_file_id": "libfile_efc2accdea188191acf8537d82f78348",

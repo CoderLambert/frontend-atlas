@@ -15,7 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { CodeBlock } from "@/components/ui/code-block";
 import { QuestionPrivateEditor, type QuestionPrivateSelection } from "@/components/site/question-private-editor";
-import { checkpointsFor, explanationMarkdownFor, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
+import { checkpointsFor, explanationMarkdownFor, questionContentVersion, type CompanyQuestion, type ContentBlock, type MasterQuestion } from "@/lib/content";
 import { deleteDraft, getStudySnapshot, saveAttempt, saveDraft, type Assessment, type Attempt, type Draft, type SelfRating } from "@/lib/study-store";
 
 type PracticeQuestion = MasterQuestion | CompanyQuestion;
@@ -125,9 +125,10 @@ export function QuestionPractice({
   const checkpoints = privateOverride
     ? privateOverride.checkpoints.map((text, index) => ({ id: `${question.qid}-private-${index + 1}`, label: text, text }))
     : publicCheckpoints;
+  const publicQuestionVersion = questionContentVersion(question, contentVersion);
   const effectiveContentVersion = privateSelection && privateOverride
-    ? `${contentVersion}:private:${encodeURIComponent(privateSelection.ownerUserId)}:${privateOverride.generationId}:${privateOverride.version}`
-    : contentVersion;
+    ? `${publicQuestionVersion}:private:${encodeURIComponent(privateSelection.ownerUserId)}:${privateOverride.generationId}:${privateOverride.version}`
+    : publicQuestionVersion;
   const effectiveTitle = privateOverride?.title ?? question.title;
   const localMode = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
   const accountReady = !localMode || privateSelection !== null;
