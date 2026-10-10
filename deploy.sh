@@ -8,9 +8,11 @@ CONFIG="$ROOT/.env.deploy"
 LOCK="$ROOT/.deploy.lock"
 
 fail() { printf '%s\n' "$1" >&2; exit 1; }
-[[ ! -L "$LOCK" ]] || fail "Refusing to use a symlink as the deployment lock file."
-exec 9>>"$LOCK"
-flock -n 9 || fail "Another deployment operation is active in this checkout; wait for it to finish and retry."
+acquire_mutation_lock() {
+  [[ ! -L "$LOCK" ]] || fail "Refusing to use a symlink as the deployment lock file."
+  exec 9>>"$LOCK"
+  flock -n 9 || fail "Another deployment operation is active in this checkout; wait for it to finish and retry."
+}
 prompt() {
   local name="$1" label="$2" value=""
   read -r -p "$label: " value
@@ -26,22 +28,25 @@ valid_env_value() {
   [[ "$1" =~ ^[a-zA-Z0-9._~+/=-]*$ ]]
 }
 validate_url_contract() {
-  node --input-type=module -e '
-    import { isIP } from "node:net";
-    const [mode, rawUrl, publicHost, appPort] = process.argv.slice(1);
-    let url;
-    try { url = new URL(rawUrl); } catch { process.exit(1); }
-    if (url.origin !== rawUrl || url.username || url.password || url.pathname !== "/" || url.search || url.hash) process.exit(1);
-    if (mode === "local") {
-      const validPort = /^\d+$/u.test(appPort) && Number(appPort) >= 1 && Number(appPort) <= 65535;
-      if (!validPort || url.protocol !== "http:" || !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) || url.port !== appPort || publicHost) process.exit(1);
-    } else if (mode === "public") {
-      const labels = publicHost.split(".");
-      const validDnsName = labels.length >= 2 && publicHost.length <= 253
-        && labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/iu.test(label));
-      if (url.protocol !== "https:" || url.port || isIP(url.hostname) || !validDnsName || url.hostname !== publicHost || rawUrl !== `https://${publicHost}`) process.exit(1);
-    } else process.exit(1);
-  ' "$1" "$2" "$3" "$4"
+  local mode="$1" raw_url="$2" public_host="$3" app_port="$4"
+  if [[ "$mode" == "local" ]]; then
+    [[ "$app_port" =~ ^[0-9]{1,5}$ ]] || return 1
+    ((10#$app_port >= 1 && 10#$app_port <= 65535)) || return 1
+    [[ -z "$public_host" && "$raw_url" == "http://127.0.0.1:$app_port" ]]
+    return
+  fi
+  [[ "$mode" == "public" && -z "$app_port" ]] || return 1
+  [[ "$public_host" =~ ^[a-z0-9.-]+$ && "$public_host" == *.* ]] || return 1
+  ((${#public_host} <= 253)) || return 1
+  [[ ! "$public_host" =~ ^[0-9.]+$ ]] || return 1
+  local -a labels=()
+  IFS='.' read -r -a labels <<< "$public_host"
+  ((${#labels[@]} >= 2)) || return 1
+  local label
+  for label in "${labels[@]}"; do
+    [[ "$label" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+  done
+  [[ "$raw_url" == "https://$public_host" ]]
 }
 write_config() {
   local mode="$1" public_url="$2" public_host="$3" app_port="$4"
@@ -150,12 +155,13 @@ up() {
   printf 'Public URL: %s\n' "$(sed -n 's/^PUBLIC_URL=//p' "$CONFIG" | head -n 1)"
 }
 case "${1:-up}" in
-  init) setup ;;
-  up) up ;;
+  init) acquire_mutation_lock; setup ;;
+  up) acquire_mutation_lock; up ;;
   status) [[ -f "$CONFIG" ]] || fail "Run ./deploy.sh init first."; compose ps ;;
   logs) [[ -f "$CONFIG" ]] || fail "Run ./deploy.sh init first."; compose logs --tail=100 -f ;;
-  down) [[ -f "$CONFIG" ]] || fail "Run ./deploy.sh init first."; compose down ;;
+  down) acquire_mutation_lock; [[ -f "$CONFIG" ]] || fail "Run ./deploy.sh init first."; compose down ;;
   backup)
+    acquire_mutation_lock
     [[ -f "$CONFIG" ]] || fail "Run ./deploy.sh init first."
     name="${2:-}"
     [[ "$name" =~ ^[a-zA-Z0-9._-]+\.sqlite$ ]] || fail "Usage: ./deploy.sh backup NAME.sqlite"
@@ -168,6 +174,7 @@ case "${1:-up}" in
     printf 'Backup copied to .local-data/backups/%s\n' "$name"
     ;;
   restore)
+    acquire_mutation_lock
     [[ -f "$CONFIG" ]] || fail "Run ./deploy.sh init first."
     source_file="${2:-}"
     target="${3:-}"

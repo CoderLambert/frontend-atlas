@@ -82,6 +82,27 @@ try {
     const nativeFetch = window.fetch.bind(window);
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === "string" ? input : input.url, location.origin);
+      const accountTest = localStorage.getItem("__hostedAccountTest");
+      if (url.pathname === "/api/site-account" && accountTest) {
+        let account = null;
+        if (accountTest === "signout-success") account = { id: "deployment-account-a", name: "Account A", email: "a@example.test" };
+        if (accountTest === "signout-switch") account = { id: "deployment-account-a", name: "Account A", email: "a@example.test" };
+        if (accountTest === "signout-switched") account = { id: "deployment-account-b", name: "Account B", email: "b@example.test" };
+        return new Response(JSON.stringify({ authConfigured: true, providers: { github: true, google: false }, account }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname === "/api/auth/sign-out" && ["signout-success", "signout-switch"].includes(accountTest)) {
+        const headers = new Headers(init.headers);
+        window.__siteSignoutProbe = { accountId: headers.get("x-frontend-atlas-account-id") };
+        if (accountTest === "signout-success") {
+          localStorage.setItem("__hostedAccountTest", "signout-empty");
+          return new Response(JSON.stringify({ success: true }), { status: 200, headers: { "content-type": "application/json" } });
+        }
+        localStorage.setItem("__hostedAccountTest", "signout-switched");
+        return new Response(JSON.stringify({ error: "account_changed" }), { status: 409, headers: { "content-type": "application/json" } });
+      }
+      if (url.pathname === "/api/site-account" && accountTest === "signout-empty") {
+        return new Response(JSON.stringify({ authConfigured: true, providers: { github: true, google: false }, account: null }), { status: 200, headers: { "content-type": "application/json" } });
+      }
       if (url.pathname !== "/api/auth/sign-in/social") return nativeFetch(input, init);
       const response = await nativeFetch(input, init);
       const payload = await response.clone().json();
@@ -115,7 +136,22 @@ try {
   assert.equal(loginHref, "/account/", "hosted private-question editor must link to the site-account login page");
   await evaluate("document.querySelector('[data-testid=private-question-login-link]').click()");
   await waitFor(async () => evaluate("location.pathname === '/account/' && document.querySelector('[data-testid=hosted-sign-in-github]') !== null"), "private-question-to-account-login navigation");
-  process.stdout.write("Hosted browser account entry, same-domain OAuth callback, and private-question login navigation passed without contacting an OAuth provider.\n");
+  await evaluate("localStorage.setItem('__hostedAccountTest', 'signout-success')");
+  await command("Page.reload", { ignoreCache: true });
+  await waitFor(async () => evaluate("document.querySelector('[data-testid=hosted-account-sign-out]') !== null"), "hosted site-account session");
+  await evaluate("document.querySelector('[data-testid=hosted-account-sign-out]').click()");
+  await waitFor(async () => evaluate("window.__siteSignoutProbe !== undefined && document.querySelector('[data-testid=hosted-sign-in-github]') !== null"), "successful account sign-out");
+  const successfulSignOut = await evaluate("window.__siteSignoutProbe");
+  assert.equal(successfulSignOut.accountId, "deployment-account-a", "sign-out sends the server-verified account ID");
+
+  await evaluate("localStorage.setItem('__hostedAccountTest', 'signout-switch')");
+  await command("Page.reload", { ignoreCache: true });
+  await waitFor(async () => evaluate("document.querySelector('[data-testid=hosted-account-sign-out]') !== null"), "account A before simulated account switch");
+  await evaluate("document.querySelector('[data-testid=hosted-account-sign-out]').click()");
+  await waitFor(async () => evaluate("document.querySelector('[data-testid=hosted-account-email]')?.textContent.includes('b@example.test')"), "account state refresh after server account-change rejection");
+  const switchedSignOut = await evaluate("window.__siteSignoutProbe");
+  assert.equal(switchedSignOut.accountId, "deployment-account-a", "in-flight sign-out retains the identity it was initiated for");
+  process.stdout.write("Hosted browser account entry, same-domain OAuth callback, private-question navigation, verified sign-out, and account-switch rejection passed without contacting an OAuth provider.\n");
 } finally {
   if (socket && socket.readyState < WebSocket.CLOSING) socket.close();
   if (chrome && chrome.exitCode === null) {

@@ -20,6 +20,22 @@ cleanup() {
   rm -rf "$data_dir"
 }
 trap cleanup EXIT
+wait_for_healthy_app() {
+  local container health_state
+  for attempt in $(seq 1 60); do
+    container="$("${compose[@]}" ps -q app)"
+    if [[ -n "$container" ]] \
+      && node -e "fetch('http://127.0.0.1:$app_port/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))" \
+      && health_state="$(docker inspect -f '{{.State.Health.Status}}' "$container" 2>/dev/null || true)" \
+      && [[ "$health_state" == healthy ]]; then
+      return 0
+    fi
+    sleep 2
+  done
+  "${compose[@]}" logs --no-color app >&2 || true
+  printf '%s\n' "HTTP and Docker health did not both become healthy before the deadline." >&2
+  return 1
+}
 cat > .env.deploy <<EOF
 DEPLOYMENT_MODE=local
 PUBLIC_URL=http://127.0.0.1:$app_port
@@ -77,12 +93,7 @@ docker run --rm -e PUBLIC_HOST=deploy-test.example.org -v "$ROOT/Caddyfile:/etc/
 "${compose[@]}" run --rm --no-deps app npm run db:migrate:runtime >/dev/null
 "${compose[@]}" up -d app >/dev/null
 
-healthy=0
-for attempt in $(seq 1 60); do
-  if node -e "fetch('http://127.0.0.1:$app_port/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then healthy=1; break; fi
-  sleep 2
-done
-[[ "$healthy" == 1 ]] || { "${compose[@]}" logs --no-color app >/dev/null; printf '%s\n' "Container did not become healthy." >&2; exit 1; }
+wait_for_healthy_app
 container="$("${compose[@]}" ps -q app)"
 health_state="$(docker inspect -f '{{.State.Health.Status}}' "$container")"
 [[ "$health_state" == healthy ]] || { printf 'Container healthcheck did not reach healthy state: %s\n' "$health_state" >&2; exit 1; }
@@ -144,18 +155,9 @@ assert.equal(recoveryDb.prepare('SELECT value FROM deploy_restart_probe WHERE ro
 recoveryDb.close();
 EOF
 "${compose[@]}" up -d app >/dev/null
-healthy=0
-for attempt in $(seq 1 45); do
-  if node -e "fetch('http://127.0.0.1:$app_port/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then healthy=1; break; fi
-  sleep 2
-done
-[[ "$healthy" == 1 ]] || { printf '%s\n' "Restored container did not become healthy." >&2; exit 1; }
+wait_for_healthy_app
 "${compose[@]}" restart app >/dev/null
-for attempt in $(seq 1 45); do
-  if node -e "fetch('http://127.0.0.1:$app_port/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then healthy=1; break; else healthy=0; fi
-  sleep 2
-done
-[[ "$healthy" == 1 ]] || { printf '%s\n' "Container did not become healthy after restart." >&2; exit 1; }
+wait_for_healthy_app
 docker exec "$("${compose[@]}" ps -q app)" node -e "const D=require('better-sqlite3');const d=new D('/data/coach.sqlite',{readonly:true});if(d.prepare('SELECT value FROM deploy_restart_probe WHERE rowid=1').get().value!=='preserved')process.exit(1);d.close()"
 
 printf '%s\n' "PASS: local/public Compose validation, production image build, Caddy config, explicit migrations, operator-owned data path, WAL writes, consistent online backup/confirmed restore, health, hostile Origin rejection, hosted browser login/callback/private-question navigation, non-root read-only runtime, no Git/SIWC service, and restart persistence."

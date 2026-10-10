@@ -67,15 +67,25 @@ export function SiteAccountLogin() {
 
   async function signOut() {
     if (busy) return;
+    const expectedAccountId = snapshot?.account?.id;
+    if (!expectedAccountId) return;
     setBusy("sign-out");
     setError("");
     try {
       const response = await fetch("/api/auth/sign-out", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "content-type": "application/json", "x-frontend-atlas-request": "1" },
+        headers: {
+          "content-type": "application/json",
+          "x-frontend-atlas-request": "1",
+          "x-frontend-atlas-account-id": expectedAccountId,
+        },
         body: "{}",
       });
+      if (response.status === 409) {
+        await load();
+        throw new Error("账号状态已变化，已重新读取当前登录状态。");
+      }
       if (!response.ok) throw new Error("退出登录没有完成。");
       await load();
     } catch (cause) {
