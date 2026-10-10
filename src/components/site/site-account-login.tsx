@@ -54,7 +54,7 @@ export function SiteAccountLogin() {
         method: "POST",
         credentials: "same-origin",
         headers: { "content-type": "application/json", "x-frontend-atlas-request": "1" },
-        body: JSON.stringify({ provider, callbackURL: "/account/" }),
+        body: JSON.stringify({ provider, callbackURL: "/account/", disableRedirect: true }),
       });
       const result = await response.json() as { url?: string; error?: string };
       if (!response.ok || !result.url) throw new Error(result.error ?? "认证服务没有返回授权地址。");

@@ -124,7 +124,7 @@ try {
   await waitFor(async () => evaluate("Boolean(window.__siteLoginProbe?.authorization)"), "site OAuth request configuration");
   const flow = await evaluate("window.__siteLoginProbe");
   assert.equal(flow.status, 200, "hosted site OAuth request should create the provider authorization URL");
-  assert.deepEqual(flow.body, { provider: "github", callbackURL: "/account/" }, "browser sends the hosted callback route, not the disabled local assistant page");
+  assert.deepEqual(flow.body, { provider: "github", callbackURL: "/account/", disableRedirect: true }, "browser requests an authorization URL for its same-domain callback without following an external OAuth redirect inside fetch");
   const authorization = new URL(flow.authorization);
   assert.equal(authorization.hostname, "github.com");
   assert.equal(authorization.searchParams.get("redirect_uri"), `${origin}/api/auth/callback/github`);
