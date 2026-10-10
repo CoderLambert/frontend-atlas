@@ -13,6 +13,7 @@ const authBaseUrl = process.env.BETTER_AUTH_URL;
 export const auth = authSecret && authBaseUrl ? betterAuth({
     database: drizzleAdapter(db, { provider: "sqlite", schema }),
     baseURL: authBaseUrl,
+    trustedOrigins: [new URL(authBaseUrl).origin],
     secret: authSecret,
     basePath: "/api/auth",
     account: {

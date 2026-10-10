@@ -52,6 +52,8 @@ jobs:
         run: npm run test:study-store
       - name: Backup validation
         run: npm run test:backup
+      - name: Portable Docker deployment and restart persistence
+        run: npm run test:deployment-docker
       - name: Question revision import and Markdown rendering
         run: |
           npm run test:question-revisions

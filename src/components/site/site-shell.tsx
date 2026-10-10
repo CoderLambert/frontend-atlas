@@ -13,7 +13,8 @@ const navigation = [
   { href: "/review/", label: "复习", icon: Clock3 },
 ];
 
-const isLocalCoachEnabled = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1";
+const isLocalCoachEnabled = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1"
+  && process.env.NEXT_PUBLIC_FRONTEND_ATLAS_DEPLOYMENT_MODE !== "hosted";
 const localNavigation = isLocalCoachEnabled
   ? [...navigation, { href: "/coach/sessions/", label: "账号会话", icon: MessageSquareText }, { href: "/coach/", label: "AI答题教练", icon: WandSparkles }]
   : [...navigation, { href: "/ai-assist/", label: "AI辅助", icon: WandSparkles }];

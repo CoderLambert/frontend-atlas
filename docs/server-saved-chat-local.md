@@ -68,23 +68,6 @@ npm run provider:bindings -- assign --user <better-auth-user-id> --profile <siwc
 
 同一会话继续发送时，服务端会按保存顺序携带最近 39 条非空 user/assistant 消息（包含本次新 user 消息，但排除尚未生成的 assistant 占位）作为多轮上下文。上下文只从当前登录用户拥有的 SQLite 会话构造，客户端不能替换历史消息或读取其他用户的会话；新开会话不会继承旧会话上下文。
 
-## Docker（Linux 本机）
+## Docker 部署
 
-容器继续使用同一套本机安全边界：Next.js 和 SIWC 服务位于同一容器，SIWC 仍只监听 `127.0.0.1:4317`。因此 Compose 使用 Linux 的 host network，不会把 4317 作为独立容器端口公开。
-
-Compose 会在运行时读取（而不是复制进镜像）现有 `.env.local`，并把当前仓库的 `.local-data` 以及现有 `~/.config/frontend-atlas` 映射到容器。启动前先停止宿主机上的 `npm run local:dev`，避免两个进程同时占用 3000/4317。然后确认下面两个宿主机路径正是要继续使用的数据位置：
-
-```sh
-test -f .local-data/coach.sqlite
-test -f "$HOME/.config/frontend-atlas/siwc-profiles.json"
-docker compose build
-docker compose up
-```
-
-容器启动时会应用已有迁移并执行 SQLite `quick_check`。如果目标数据库文件不存在，它会拒绝静默创建空库。只有全新安装时，才显式允许第一次初始化：
-
-```sh
-FRONTEND_ATLAS_ALLOW_DB_INITIALIZE=1 docker compose up
-```
-
-首次初始化成功并确认数据卷后，后续启动不要再设置该变量。停止容器不会删除绑定目录中的数据库或 SIWC profile；不要使用会连同数据一起删除卷或宿主机目录的命令。
+可移植 Docker 部署只托管学习站及其 Better Auth/SQLite 数据；它不复制本机 SIWC profile，也不会启动 ChatGPT 本机服务。请遵循 [Docker 部署说明](./docker-deployment.md)。其中的 `./.local-data/deploy/coach.sqlite` 与本地运行使用的 `.local-data/coach.sqlite` 是独立文件。不要把 `~/.config/frontend-atlas/siwc-profiles.json` 挂载给站点容器。
