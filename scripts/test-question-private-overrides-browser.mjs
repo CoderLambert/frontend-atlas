@@ -262,7 +262,28 @@ try {
   assert.match(rendered, /十、常见追问与完整参考答案/u, "long AI article retains its complete sections at narrow width");
   assert.equal(await browser.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, "A20 fits the narrow viewport without page-level horizontal overflow");
 
-  process.stdout.write("Question private override and article browser flows passed: stale public-base warning and rebase, account isolation, B07 inert HTML, B17 response headers, and A20 complete Markdown at desktop and narrow widths.\n");
+  rendered = await questionText("A15");
+  assert.match(rendered, /Microsoft RAG 评估维度/u, "A15 full article retains its source link");
+  await viewport(390, 844);
+  await questionText("A15");
+  const a15Checkpoint = await browser.evaluate(`(() => {
+    const details = [...document.querySelectorAll('.assessment-card .checkpoint-copy details')].at(-1);
+    if (!details) return null;
+    details.querySelector('summary')?.click();
+    const paragraph = details.querySelector('p');
+    const host = details.parentElement;
+    return {
+      open: details.open,
+      text: paragraph?.innerText || '',
+      fits: Boolean(paragraph && paragraph.scrollWidth <= paragraph.clientWidth && host.scrollWidth <= host.clientWidth),
+    };
+  })()`);
+  assert.ok(a15Checkpoint?.open, `A15 long tenth-checkpoint details can be expanded on a narrow screen: ${JSON.stringify(a15Checkpoint)}`);
+  assert.match(a15Checkpoint.text, /file_id、filename、index/u, "expanded A15 checkpoint keeps its complete API identifier text");
+  assert.equal(a15Checkpoint.fits, true, "expanded A15 checkpoint text wraps within its narrow-screen column");
+  assert.equal(await browser.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, "A15 expanded self-assessment fits the narrow viewport without page-level horizontal overflow");
+
+  process.stdout.write("Question private override and article browser flows passed: stale public-base warning and rebase, account isolation, B07 inert HTML, B17 response headers, A20 complete Markdown, and expanded A15 checkpoint at desktop and narrow widths.\n");
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
   process.exitCode = 1;

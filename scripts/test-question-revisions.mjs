@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyRevisionBatch, prepareRevisionBatch, SOURCE_DOCUMENT, TARGET_QIDS } from "./apply-question-revisions.mjs";
+import { applyRevisionBatch, extractCheckpoints, normalizeMarkdown, prepareRevisionBatch, SOURCE_DOCUMENT, TARGET_QIDS } from "./apply-question-revisions.mjs";
 import { publicQuestionSnapshot, publicQuestionSnapshotSha256 } from "../src/lib/server/question-public-content.ts";
 import { questionContentVersion } from "../src/lib/question-version.ts";
 
@@ -58,6 +58,17 @@ function copyFixture(destination) {
   fs.copyFileSync(sourcePath, path.join(destination, SOURCE_DOCUMENT));
 }
 
+function copyCurrentFixture(destination) {
+  fs.mkdirSync(path.join(destination, "src"), { recursive: true });
+  fs.cpSync(contentDir, path.join(destination, "src/content"), { recursive: true });
+  fs.mkdirSync(path.join(destination, "scripts"), { recursive: true });
+  for (const name of ["generate-content-index.mjs", "content-validation.mjs"]) {
+    fs.copyFileSync(path.join(root, "scripts", name), path.join(destination, "scripts", name));
+  }
+  fs.mkdirSync(path.join(destination, "docs/research"), { recursive: true });
+  fs.copyFileSync(sourcePath, path.join(destination, SOURCE_DOCUMENT));
+}
+
 function alteredSource(mutator) {
   const copy = structuredClone(source);
   mutator(copy);
@@ -83,12 +94,81 @@ try {
   assert.deepEqual(snapshotContentFiles(dryRunRepo), dryBefore, "default dry-run must not write canonical or generated files");
   assert.equal(fs.existsSync(path.join(dryRunRepo, ".question-revisions.lock")), false, "dry-run does not claim the apply lock");
 
+  const legacyRepo = path.join(fixtureDir, "legacy-a15-checkpoints");
+  copyCurrentFixture(legacyRepo);
+  const legacyMapPath = path.join(legacyRepo, "src/content/knowledge-map.source.json");
+  const legacyBeforeMap = JSON.parse(fs.readFileSync(legacyMapPath, "utf8"));
+  const sourceA15 = source.records.find((record) => record.qid === "A15");
+  const previousA15Markdown = normalizeMarkdown(sourceA15);
+  legacyBeforeMap.master_questions.find((question) => question.qid === "A15").checkpoints = extractCheckpoints(previousA15Markdown, "A15", { includeA15AssessmentPostscript: true });
+  fs.writeFileSync(legacyMapPath, JSON.stringify(legacyBeforeMap, null, 2) + "\n");
+  const legacyBeforeById = new Map(legacyBeforeMap.master_questions.map((question) => [question.qid, question]));
+  assert.equal(legacyBeforeById.get("A15").checkpoints.length, 10);
+  assert.match(legacyBeforeById.get("A15").checkpoints.at(-1), /评估时也要分开看：/u, "fixture captures the exact previously applied A15 extraction defect");
+  const legacyResult = applyRevisionBatch({ rootDir: legacyRepo });
+  assert.equal(legacyResult.status, "applied", "the importer narrowly repairs the exact legacy A15 checkpoint state");
+  const legacyAfterMap = JSON.parse(fs.readFileSync(path.join(legacyRepo, "src/content/knowledge-map.source.json"), "utf8"));
+  const legacyAfterById = new Map(legacyAfterMap.master_questions.map((question) => [question.qid, question]));
+  const legacyChanged = [...legacyBeforeById.keys()].filter((qid) => hashQuestion(legacyBeforeById.get(qid)) !== hashQuestion(legacyAfterById.get(qid)));
+  assert.deepEqual(legacyChanged, ["A15"], "legacy checkpoint correction changes only A15");
+  assert.equal(legacyAfterById.get("A15").checkpoints.length, 10);
+  assert.equal(legacyAfterById.get("A15").checkpoints.at(-1), "只有文件级 API 引用：只给 file_id、filename、index，没有已验证的原文范围。预期如实提供文件级核查能力，继续获取或建立需要的证据映射。自己补出页码、把 index 宣传成原文坐标，判失败。");
+
   const failedRepo = path.join(fixtureDir, "rollback");
   copyFixture(failedRepo);
   const failedBefore = snapshotContentFiles(failedRepo);
   assert.throws(() => applyRevisionBatch({ rootDir: failedRepo, failAfterRenamesForTest: 2 }), /simulated atomic install failure/u);
   assert.deepEqual(snapshotContentFiles(failedRepo), failedBefore, "failed multi-file install must roll back every file");
   assert.equal(fs.readdirSync(failedRepo).some((name) => name.startsWith(".question-revisions-stage-")), false);
+
+  const midInstallRepo = path.join(fixtureDir, "mid-install-edit");
+  copyFixture(midInstallRepo);
+  const midInstallMapPath = path.join(midInstallRepo, "src/content/knowledge-map.source.json");
+  let externalMapBytes;
+  let midInstallError;
+  try {
+    applyRevisionBatch({
+      rootDir: midInstallRepo,
+      afterInstallForTest({ file, index }) {
+        if (index !== 0 || file !== "src/content/knowledge-map.source.json") return;
+        const changed = JSON.parse(fs.readFileSync(midInstallMapPath, "utf8"));
+        changed.externalDuringInstall = "preserve this edit";
+        externalMapBytes = Buffer.from(JSON.stringify(changed, null, 2) + "\n");
+        fs.writeFileSync(midInstallMapPath, externalMapBytes);
+      },
+    });
+  } catch (error) {
+    midInstallError = error;
+  }
+  assert.match(midInstallError?.message ?? "", /manual recovery required/u, "a changed installed destination requires manual recovery");
+  assert.deepEqual(fs.readFileSync(midInstallMapPath), externalMapBytes, "rollback preserves an outside edit made after candidate installation");
+  const retainedStage = midInstallError.message.match(/Recovery stage retained at (.+?) \(backups at /u)?.[1];
+  assert.ok(retainedStage && fs.existsSync(retainedStage), "conflicting rollback keeps the recovery stage");
+  for (const name of fileNames) {
+    assert.ok(fs.existsSync(path.join(retainedStage, "backup", path.basename(name))), `${name} backup remains available for manual recovery`);
+  }
+  const preRunMap = JSON.parse(baselineContent("knowledge-map.source.json"));
+  const savedMap = JSON.parse(fs.readFileSync(path.join(retainedStage, "backup", "knowledge-map.source.json"), "utf8"));
+  assert.deepEqual(savedMap, preRunMap, "retained original backup remains the pre-run map");
+
+  const removedDuringInstallRepo = path.join(fixtureDir, "mid-install-delete");
+  copyFixture(removedDuringInstallRepo);
+  const removedDuringInstallMapPath = path.join(removedDuringInstallRepo, "src/content/knowledge-map.source.json");
+  let removedDuringInstallError;
+  try {
+    applyRevisionBatch({
+      rootDir: removedDuringInstallRepo,
+      afterInstallForTest({ file, index }) {
+        if (index === 0 && file === "src/content/knowledge-map.source.json") fs.rmSync(removedDuringInstallMapPath);
+      },
+    });
+  } catch (error) {
+    removedDuringInstallError = error;
+  }
+  assert.match(removedDuringInstallError?.message ?? "", /manual recovery required/u, "a removed installed destination requires manual recovery");
+  assert.equal(fs.existsSync(removedDuringInstallMapPath), false, "rollback preserves an outside deletion rather than recreating that destination");
+  const deletionStage = removedDuringInstallError.message.match(/Recovery stage retained at (.+?) \(backups at /u)?.[1];
+  assert.ok(deletionStage && fileNames.every((name) => fs.existsSync(path.join(deletionStage, "backup", path.basename(name)))), "all recovery backups survive an outside deletion");
 
   const lockedRepo = path.join(fixtureDir, "locked");
   copyFixture(lockedRepo);
@@ -154,6 +234,12 @@ try {
     assert.equal(chapterReferences.length, 1);
     assert.equal(chapterReferences[0].title, question.title);
   }
+  const a15 = appliedById.get("A15");
+  assert.equal(a15.checkpoints.at(-1), "只有文件级 API 引用：只给 file_id、filename、index，没有已验证的原文范围。预期如实提供文件级核查能力，继续获取或建立需要的证据映射。自己补出页码、把 index 宣传成原文坐标，判失败。", "A15 self-assessment ends at its tenth explicit checkpoint");
+  assert.match(a15.explanation_markdown, /评估时也要分开看：检索是否找到了需要的材料/u, "A15 retains the assessment postscript in the full article");
+  assert.match(a15.explanation_markdown, /例如 A0 的引用定位可以全部成功/u, "A15 retains the postscript example");
+  assert.match(a15.explanation_markdown, /\[Microsoft RAG 评估维度\]/u, "A15 retains its Microsoft source link");
+  assert.ok(!a15.checkpoints.at(-1).includes("评估时也要分开看"), "A15 postscript must not become an eleventh checkpoint");
 
   for (const question of baseMap.master_questions.filter((item) => !TARGET_QIDS.includes(item.qid))) {
     const updated = appliedById.get(question.qid);

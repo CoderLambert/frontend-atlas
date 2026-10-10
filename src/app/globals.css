@@ -359,11 +359,12 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .checkpoint-list { display: grid; border-top: 1px solid #e4e9e3; }
 .checkpoint-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(17rem, .65fr); align-items: start; gap: 1rem; border-bottom: 1px solid #e6eae5; padding: .85rem .2rem; }
 .checkpoint-copy { display: flex; align-items: flex-start; gap: .75rem; min-width: 0; }
+.checkpoint-copy > div { min-width: 0; }
 .checkpoint-number { flex: 0 0 auto; color: #426653; font-family: var(--font-mono); font-size: .8rem; font-weight: 700; }
 .checkpoint-copy strong { display: block; color: #344b3e; font-size: .88rem; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
 .checkpoint-copy details { margin-top: .3rem; color: #6a7970; font-size: .78rem; }
 .checkpoint-copy summary { cursor: pointer; color: #547462; }
-.checkpoint-copy details p { margin: .3rem 0 0; line-height: 1.6; white-space: pre-wrap; }
+.checkpoint-copy details p { margin: .3rem 0 0; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
 .rating-group { display: flex; flex-wrap: wrap; gap: .4rem; }
 .rating-choice { display: inline-flex; min-height: 2.6rem; align-items: center; gap: .35rem; border: 1px solid #d8e0d9; border-radius: .65rem; background: #fff; padding: .4rem .6rem; color: #586a60; font-size: .76rem; cursor: pointer; }
 .rating-choice:has([data-state=checked]) { border-color: #7c9b89; background: #edf3ed; color: #234c3c; }

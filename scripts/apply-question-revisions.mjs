@@ -111,13 +111,14 @@ export function normalizeMarkdown(record) {
   return markdown;
 }
 
-export function extractCheckpoints(markdown, qid) {
+export function extractCheckpoints(markdown, qid, { includeA15AssessmentPostscript = false } = {}) {
   const lines = markdown.split("\n");
   const headingIndex = lines.findIndex((line) =>
     /^[一二三四五六七八九十]+、/u.test(line) && /自评|检查点|判定标准/u.test(line));
   assert(headingIndex >= 0, qid + " has no explicit self-assessment section");
   let end = headingIndex + 1;
-  const postscript = /^(?:实际核读的一手资料|实际核对的一手资料|实际核查的一手资料|参考资料(?:来源)?|参考文献|Sources|References|能够说清每个条件|本题的掌握标准|自评合格的核心|本次(?:修订|保留原稿))/iu;
+  const a15Postscript = includeA15AssessmentPostscript ? "" : "|评估时也要分开看：";
+  const postscript = new RegExp("^(?:实际核读的一手资料|实际核对的一手资料|实际核查的一手资料|参考资料(?:来源)?|参考文献|Sources|References|能够说清每个条件|本题的掌握标准|自评合格的核心|本次(?:修订|保留原稿)" + a15Postscript + ")", "iu");
   while (end < lines.length && !/^[一二三四五六七八九十]+、/u.test(lines[end]) && !postscript.test(lines[end])) end += 1;
   const checkpoints = [];
   for (let index = headingIndex + 1; index < end; index += 1) {
@@ -246,6 +247,16 @@ function recordIsApplied(question, record, markdown, checkpoints, title) {
     && JSON.stringify(question.source?.revisionProvenance) === JSON.stringify(buildProvenance(record));
 }
 
+function recordIsLegacyA15Applied(question, record, markdown, title) {
+  return record.qid === "A15"
+    && question.content_revision === CONTENT_REVISION
+    && question.title === title
+    && JSON.stringify(question.content) === JSON.stringify(markdownToBlocks(markdown))
+    && question.explanation_markdown === markdown
+    && JSON.stringify(question.checkpoints) === JSON.stringify(extractCheckpoints(markdown, record.qid, { includeA15AssessmentPostscript: true }))
+    && JSON.stringify(question.source?.revisionProvenance) === JSON.stringify(buildProvenance(record));
+}
+
 export function prepareRevisionBatch({ rootDir, sourcePath } = {}) {
   const root = path.resolve(rootDir || path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
   const inputPath = path.resolve(sourcePath || path.join(root, SOURCE_DOCUMENT));
@@ -264,20 +275,21 @@ export function prepareRevisionBatch({ rootDir, sourcePath } = {}) {
     const title = record.title.replace(new RegExp("^" + record.qid + "[｜|]\\s*"), "");
     assert(title, record.qid + " title is empty");
     const currentlyApplied = recordIsApplied(question, record, markdown, checkpoints, title);
+    const legacyA15Applied = !currentlyApplied && recordIsLegacyA15Applied(question, record, markdown, title);
     const currentHash = questionHash(question);
-    if (!currentlyApplied && currentHash !== BASELINE_QUESTION_HASHES[record.qid]) {
+    if (!currentlyApplied && !legacyA15Applied && currentHash !== BASELINE_QUESTION_HASHES[record.qid]) {
       throw new Error(record.qid + " baseline mismatch; refusing to overwrite a newer or divergent question");
     }
-    if (!currentlyApplied) {
+    if (!currentlyApplied && !legacyA15Applied) {
       assert(question.content_revision === undefined, record.qid + " has an unexpected content revision");
       assert(Array.isArray(question.content) && question.content.length > 0, record.qid + " baseline content is missing");
     }
-    plan.push({ record, question, markdown, checkpoints, title, currentHash, alreadyApplied: currentlyApplied });
+    plan.push({ record, question, markdown, checkpoints, title, currentHash, alreadyApplied: currentlyApplied, legacyA15Applied });
   }
   for (const item of plan) {
     const references = chapters.chapters.flatMap((chapter) => chapter.question_references || []).filter((reference) => reference.qid === item.record.qid);
     assert(references.length === 1, item.record.qid + " must have exactly one chapter question reference");
-    if (item.alreadyApplied) assert(references[0].title === item.title, item.record.qid + " chapter reference differs from the applied title");
+    if (item.alreadyApplied || item.legacyA15Applied) assert(references[0].title === item.title, item.record.qid + " chapter reference differs from the applied title");
   }
   return { root, map, chapters, plan, fileHashes, allAlreadyApplied: plan.every((item) => item.alreadyApplied) };
 }
@@ -315,8 +327,12 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n");
 }
 
-function installArtifacts(root, stageDir, candidateDir, expectedHashes, failAfterRenames = null) {
+function installArtifacts(root, stageDir, candidateDir, expectedHashes, failAfterRenames = null, afterInstallForTest = null) {
   const installHashes = new Map(expectedHashes);
+  const candidateHashes = new Map(GENERATED_FILES.map((file) => [
+    file,
+    sha256(fs.readFileSync(path.join(candidateDir, path.basename(file)))),
+  ]));
   assertGeneratedFilesUnchanged(root, expectedHashes);
   const backupDir = path.join(stageDir, "backup");
   fs.mkdirSync(backupDir);
@@ -332,22 +348,36 @@ function installArtifacts(root, stageDir, candidateDir, expectedHashes, failAfte
       const backup = path.join(backupDir, path.basename(file));
       const candidate = path.join(candidateDir, path.basename(file));
       fs.renameSync(destination, path.join(backupDir, "installed-" + index));
-      moved.push({ destination, backup });
+      moved.push({ file, destination, backup, candidateHash: candidateHashes.get(file), candidateInstalled: false });
       fs.renameSync(candidate, destination);
-      installHashes.set(file, sha256(fs.readFileSync(destination)));
+      moved[moved.length - 1].candidateInstalled = true;
+      installHashes.set(file, candidateHashes.get(file));
+      afterInstallForTest?.({ root, file, index });
       if (failAfterRenames === index + 1) throw new Error("simulated atomic install failure");
     }
   } catch (error) {
     const rollbackErrors = [];
     for (const item of moved.reverse()) {
       try {
-        if (fs.existsSync(item.destination)) fs.rmSync(item.destination);
+        if (fs.existsSync(item.destination)) {
+          const currentHash = sha256(fs.readFileSync(item.destination));
+          if (currentHash !== item.candidateHash) {
+            rollbackErrors.push(item.file + " changed during rollback; preserved current destination and backup");
+            continue;
+          }
+          fs.rmSync(item.destination);
+        } else if (item.candidateInstalled) {
+          rollbackErrors.push(item.file + " disappeared during rollback; preserved absence and backup");
+          continue;
+        }
         if (fs.existsSync(item.backup)) fs.renameSync(item.backup, item.destination);
       } catch (rollbackError) {
-        rollbackErrors.push(rollbackError);
+        rollbackErrors.push(item.file + ": " + (rollbackError instanceof Error ? rollbackError.message : String(rollbackError)));
       }
     }
-    if (rollbackErrors.length) throw new Error("install failed and rollback was incomplete; recover from backup at " + backupDir + ": " + rollbackErrors.map((item) => item.message).join("; "));
+    if (rollbackErrors.length) {
+      throw new Error("install failed and rollback was incomplete; manual recovery required. Conflicting destinations were preserved. Recovery stage retained at " + stageDir + " (backups at " + backupDir + "). Details: " + rollbackErrors.join("; ") + ". Original error: " + (error instanceof Error ? error.message : String(error)));
+    }
     throw error;
   }
 }
@@ -375,17 +405,17 @@ function acquireRevisionLock(root) {
   };
 }
 
-export function applyRevisionBatch({ rootDir, sourcePath, failAfterRenamesForTest = null, beforeInstallForTest = null } = {}) {
+export function applyRevisionBatch({ rootDir, sourcePath, failAfterRenamesForTest = null, beforeInstallForTest = null, afterInstallForTest = null } = {}) {
   const root = path.resolve(rootDir || path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
   const releaseLock = acquireRevisionLock(root);
   try {
-    return applyRevisionBatchLocked({ rootDir: root, sourcePath, failAfterRenamesForTest, beforeInstallForTest });
+    return applyRevisionBatchLocked({ rootDir: root, sourcePath, failAfterRenamesForTest, beforeInstallForTest, afterInstallForTest });
   } finally {
     releaseLock();
   }
 }
 
-function applyRevisionBatchLocked({ rootDir, sourcePath, failAfterRenamesForTest, beforeInstallForTest }) {
+function applyRevisionBatchLocked({ rootDir, sourcePath, failAfterRenamesForTest, beforeInstallForTest, afterInstallForTest }) {
   const prepared = prepareRevisionBatch({ rootDir, sourcePath });
   if (prepared.allAlreadyApplied) return { status: "already-applied", qids: TARGET_QIDS, writtenFiles: [] };
   applyPlan(prepared);
@@ -402,7 +432,7 @@ function applyRevisionBatchLocked({ rootDir, sourcePath, failAfterRenamesForTest
       assert(fs.existsSync(candidate), "candidate generation omitted " + file);
     }
     beforeInstallForTest?.(root);
-    installArtifacts(root, stageDir, candidateDir, prepared.fileHashes, failAfterRenamesForTest);
+    installArtifacts(root, stageDir, candidateDir, prepared.fileHashes, failAfterRenamesForTest, afterInstallForTest);
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes("rollback was incomplete")) {
       fs.rmSync(stageDir, { recursive: true, force: true });
