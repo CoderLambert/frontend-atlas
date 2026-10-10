@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     init: true
     restart: unless-stopped
+    stop_grace_period: 30s
     user: "${APP_UID:-1000}:${APP_GID:-1000}"
     env_file:
       - path: .env.deploy
@@ -17,6 +18,7 @@ services:
       FRONTEND_ATLAS_DB_PATH: /data/coach.sqlite
       FRONTEND_ATLAS_BIND_HOST: 0.0.0.0
       FRONTEND_ATLAS_APP_PORT: 3000
+      FRONTEND_ATLAS_SHUTDOWN_TIMEOUT_MS: 25000
       FRONTEND_ATLAS_ALLOW_DB_INITIALIZE: ${FRONTEND_ATLAS_ALLOW_DB_INITIALIZE:-0}
     volumes:
       - type: bind

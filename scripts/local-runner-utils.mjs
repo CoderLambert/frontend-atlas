@@ -1,10 +1,10 @@
-export function terminateChild(child) {
+export function terminateChild(child, timeoutMs = 4_000) {
   if (!child || child.exitCode !== null) return Promise.resolve();
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
       resolve();
-    }, 4_000);
+    }, timeoutMs);
     child.once("exit", () => {
       clearTimeout(timer);
       resolve();
