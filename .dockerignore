@@ -1,4 +1,5 @@
 .git
+.deploy.lock
 .github
 node_modules
 .next

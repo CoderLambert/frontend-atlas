@@ -60,6 +60,14 @@ if (existing) {
   const rollbackPath = `${target}.pre-restore-${new Date().toISOString().replace(/[:.]/gu, "-")}.sqlite`;
   const oldDb = new Database(target, { readonly: true, fileMustExist: true });
   try { await oldDb.backup(rollbackPath); } finally { oldDb.close(); }
+  const rollbackDb = new Database(rollbackPath, { readonly: true, fileMustExist: true });
+  try {
+    if (rollbackDb.pragma("quick_check", { simple: true }) !== "ok") {
+      throw new Error(`Pre-restore recovery copy failed quick_check at ${rollbackPath}; the original target was left untouched.`);
+    }
+  } finally {
+    rollbackDb.close();
+  }
 }
 await fs.rename(stage, target);
 process.stdout.write("SQLite restore installed and passed quick_check. The app was not started.\n");

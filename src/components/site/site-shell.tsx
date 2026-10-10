@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BookOpen, Clock3, Database, FileQuestion, MessageSquareText, Search, Sparkles, WandSparkles } from "lucide-react";
+import { BookOpen, Clock3, Database, FileQuestion, LogIn, MessageSquareText, Search, Sparkles, WandSparkles } from "lucide-react";
 import { cn } from "@/lib/cn";
 import { ReviewerNavLink } from "@/components/site/reviewer-nav-link";
 
@@ -15,9 +15,12 @@ const navigation = [
 
 const isLocalCoachEnabled = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE === "1"
   && process.env.NEXT_PUBLIC_FRONTEND_ATLAS_DEPLOYMENT_MODE !== "hosted";
+const hostedSiteDeployment = process.env.NEXT_PUBLIC_FRONTEND_ATLAS_DEPLOYMENT_MODE === "hosted";
 const localNavigation = isLocalCoachEnabled
   ? [...navigation, { href: "/coach/sessions/", label: "账号会话", icon: MessageSquareText }, { href: "/coach/", label: "AI答题教练", icon: WandSparkles }]
-  : [...navigation, { href: "/ai-assist/", label: "AI辅助", icon: WandSparkles }];
+  : hostedSiteDeployment
+    ? [...navigation, { href: "/account/", label: "站点账号", icon: LogIn }, { href: "/ai-assist/", label: "AI辅助", icon: WandSparkles }]
+    : [...navigation, { href: "/ai-assist/", label: "AI辅助", icon: WandSparkles }];
 
 function isCurrent(pathname: string, href: string) {
   if (href === "/") return pathname === "/";

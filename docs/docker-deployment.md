@@ -4,7 +4,7 @@ This deploys the learning site and its Better Auth account database. It does **n
 
 ## Requirements and first start
 
-Use a Linux host with Docker Engine, the Docker Compose v2 plugin, and a working DNS name for public mode. The Dockerfile uses the official `node:24.21.0-bookworm-slim` image and the optional HTTPS proxy uses the official `caddy:2.11.7-alpine` image. The deployment helper also needs Bash. Run `npm run test:deployment-docker` on each target architecture; it reports the Docker daemon architecture and verifies an actual local image build. This task environment did not have access to the Docker daemon, so no container architecture is recorded as build-verified here. Do not infer support from the multi-architecture upstream tags alone.
+Use a Linux host with Docker Engine, the Docker Compose v2 plugin, Bash, `flock` (from util-linux), and a working DNS name for public mode. The Dockerfile uses the official `node:24.21.0-bookworm-slim` image and the optional HTTPS proxy uses the official `caddy:2.11.7-alpine` image. Run `npm run test:deployment-docker` on each target architecture; it reports the Docker daemon architecture and verifies an actual local image build. This task environment did not have access to the Docker daemon, so no container architecture is recorded as build-verified here. Do not infer support from the multi-architecture upstream tags alone.
 
 From a clean checkout:
 
@@ -12,7 +12,7 @@ From a clean checkout:
 ./deploy.sh
 ```
 
-On its first run, the script asks whether to run locally or on a public domain. It creates `.env.deploy` with mode `0600`, prompts for a Better Auth secret without echoing it, and accepts optional GitHub or Google OAuth credentials. Supply a secret of 32–256 characters; the script does not generate or print a persistent credential. It refuses to overwrite an existing config. The committed `.env.deploy.example` is a template only.
+On its first run, the script asks whether to run locally or on a public domain. It creates `.env.deploy` with mode `0600`, prompts for a Better Auth secret without echoing it, and accepts optional GitHub or Google OAuth credentials. Supply a secret of 32–256 characters; the script does not generate or print a persistent credential. It refuses to overwrite an existing config. The committed `.env.deploy.example` is a template only. The setup validates the generated local loopback URL or public HTTPS DNS origin strictly; it does not accept a URL path, credentials, or custom port. Deployment state changes use a per-checkout lock so two `deploy.sh` operations cannot race.
 
 For a local-only check, choose `local`. The service binds only to `127.0.0.1:3010` by default and accepts plain HTTP only for loopback URLs. This mode is intentionally unsuitable for public access. Choose a different free local port during setup if needed.
 
@@ -31,7 +31,7 @@ The provider ID and secret must be supplied as a pair. Without those values, tha
 
 ## Data, backups, and restore
 
-The deployment database is in `./.local-data/deploy/coach.sqlite`, a separate location from the old local app's `.local-data/coach.sqlite`. Compose runs the app as the UID/GID of the setup operator so the bind-mounted data remains writable without changing ownership or permissions on an existing host directory. New directories are created under a restrictive umask. The container process itself is non-root; it needs write access only to the database directory and Next.js cache. A startup migration and SQLite `quick_check` run before the web server starts.
+The deployment database is in `./.local-data/deploy/coach.sqlite`, a separate location from the old local app's `.local-data/coach.sqlite`. Before the first Compose command, the helper creates/checks the data and backup directories and requires their UID/GID to match the unprivileged operator and configured container UID/GID. It fails closed if existing ownership differs and never runs `chown` or `chmod` on an existing data directory. New directories are created under a restrictive umask. The container process itself is non-root; it needs write access only to the database directory and Next.js cache. A startup migration and SQLite `quick_check` run before the web server starts.
 
 Run a consistent online SQLite backup while the app is running:
 
@@ -49,13 +49,13 @@ To restore, stop the stack, name both the backup and exact in-container database
 ./deploy.sh up
 ```
 
-Restore refuses an active app, unexpected SQLite WAL sidecar files, a mismatched confirmation target, or a source that fails integrity checking. Replacing an existing database creates a checked `.pre-restore-*.sqlite` recovery copy in the data directory first. `./deploy.sh down` preserves both application data and Caddy's certificate volumes. Never use `docker compose down -v` for routine stop or upgrade; it removes the Caddy volumes and can destroy data if the volume layout is later changed.
+Restore refuses any app container state other than `exited` or `dead` (including `restarting`), unexpected SQLite WAL sidecar files, a mismatched confirmation target, or a source that fails integrity checking. The app stop state is checked again immediately after the typed confirmation. The per-checkout lock serializes `deploy.sh` operations; direct `docker compose` calls outside this helper are not covered by that lock. Replacing an existing database creates a `.pre-restore-*.sqlite` recovery copy and verifies it with `quick_check` before replacing the target; a failed recovery-copy check aborts replacement and retains the original database and copy for inspection. `./deploy.sh down` preserves both application data and Caddy's certificate volumes. Never use `docker compose down -v` for routine stop or upgrade; it removes the Caddy volumes and can destroy data if the volume layout is later changed.
 
 Run exactly one app replica against this SQLite database. The conversation runtime and SQLite WAL are single-instance; do not share this directory between containers or hosts. Do not copy only `coach.sqlite` while the app is online; use the backup command. For a clean upgrade, keep the existing config/data directories, rebuild the image, then start the same Compose project. Startup applies forward migrations.
 
 ## ChatGPT/SIWC and operator boundary
 
-The existing SIWC authorization is bound to its OAuth client: its callback is `http://127.0.0.1:4317/oauth/callback`, and the legacy browser coach calls that machine's loopback service. Those sessions are not transferable with the site image or database. This hosted build therefore hides the local coach and account-session pages and does not start SIWC; port 4317 is neither published nor reverse-proxied. `/ai-assist/` explains this boundary. No mock response is enabled or presented as real AI.
+The existing SIWC authorization is bound to its OAuth client: its callback is `http://127.0.0.1:4317/oauth/callback`, and the legacy browser coach calls that machine's loopback service. Those sessions are not transferable with the site image or database. This hosted build hides the local AI coach and SIWC-specific account-session screen and does not start SIWC; port 4317 is neither published nor reverse-proxied. Hosted site login remains available at `/account/`, its Better Auth callback returns there, and the private-question editor links to that site-account screen. `/ai-assist/` explains the boundary. No mock response is enabled or presented as real AI. A site login does not authorize ChatGPT/SIWC.
 
 OpenAI documents a supported, user-controlled self-hosted VM flow for an open-source SIWC app: create a stable host ID for that VM, complete OAuth locally using the same tool/client, user, and workspace, then transfer that registration's protected credential file over a secure channel and let the VM manage refreshes. The localhost OAuth callback still reaches the browser's machine; it is not a callback URL for the public domain. This Docker setup does not implement or test that credential-transfer workflow and does not mount a profile/token volume. Do not put SIWC tokens in the image, `.env.deploy`, or a shared/multi-user service. A separately designed private SIWC runtime would need its own protected storage, host ID, and operator process, following [OpenAI's self-hosted VM instructions](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms) and [SIWC Terms](https://openai.com/policies/sign-in-with-chatgpt-terms/). Site OAuth accounts remain separate from ChatGPT/SIWC accounts.
 

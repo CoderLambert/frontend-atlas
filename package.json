@@ -21,6 +21,7 @@
     "db:restore": "node scripts/restore-sqlite.mjs",
     "test:deployment-config": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/test-deployment-config.mjs",
     "test:deployment-db": "node scripts/test-deployment-db.mjs",
+    "test:deploy-init": "node scripts/test-deploy-init.mjs",
     "test:deployment-docker": "bash scripts/test-deployment-docker.sh",
     "site:roles": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/site-roles.mjs",
     "question:publish": "node --conditions=react-server --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types scripts/question-publication.mjs",

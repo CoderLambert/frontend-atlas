@@ -9,6 +9,26 @@ permissions:
   contents: read
 
 jobs:
+  docker-deployment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Build and exercise the exact pull request head in Docker
+        run: |
+          CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then
+            echo 'No Chromium-compatible browser installed on the runner.'
+            exit 1
+          fi
+          CHROMIUM_PATH="$CHROME" FRONTEND_ATLAS_REQUIRE_DOCKER=1 npm run test:deployment-docker
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
@@ -52,8 +72,6 @@ jobs:
         run: npm run test:study-store
       - name: Backup validation
         run: npm run test:backup
-      - name: Portable Docker deployment and restart persistence
-        run: npm run test:deployment-docker
       - name: Question revision import and Markdown rendering
         run: |
           npm run test:question-revisions
