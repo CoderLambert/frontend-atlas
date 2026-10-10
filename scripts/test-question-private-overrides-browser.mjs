@@ -96,8 +96,15 @@ function setValue(selector, value) {
 
 function rows() {
   const opened = openSqliteDatabase(databasePath);
-  try { return opened.client.prepare("SELECT owner_user_id, qid, title, explanation_markdown, checkpoints_json, generation_id, version FROM question_private_overrides ORDER BY owner_user_id").all(); }
+  try { return opened.client.prepare("SELECT owner_user_id, qid, title, explanation_markdown, checkpoints_json, generation_id, version, base_content_sha256 FROM question_private_overrides ORDER BY owner_user_id").all(); }
   finally { opened.client.close(); }
+}
+
+function markOverrideBaseStale(ownerUserId, qid) {
+  const opened = openSqliteDatabase(databasePath);
+  try {
+    opened.client.prepare("UPDATE question_private_overrides SET base_content_sha256 = ? WHERE owner_user_id = ? AND qid = ?").run("stale-public-snapshot", ownerUserId, qid);
+  } finally { opened.client.close(); }
 }
 
 function proposalRows() {
@@ -141,11 +148,19 @@ try {
   await browser.evaluate("document.querySelector('[data-testid=question-private-save]').click()");
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A override applied");
   assert.deepEqual(rows().map((row) => ({ owner: row.owner_user_id, title: row.title, version: row.version })), [{ owner: "mock-user-a", title: "A 的私人 D13 题干", version: 1 }]);
+  markOverrideBaseStale("mock-user-a", "D13");
+  await browser.command("Page.reload", { ignoreCache: true });
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=private-public-base-outdated]') !== null"), "stale public-base warning");
+  await browser.evaluate("document.querySelector('[data-testid=question-private-open]').click()");
+  await waitFor(() => browser.evaluate("document.querySelector('#private-question-title')?.value === 'A 的私人 D13 题干'"), "stale private content remains editable");
+  await browser.evaluate("document.querySelector('[data-testid=question-private-save]').click()");
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=private-public-base-outdated]') === null"), "rebase warning clears after save");
+  assert.equal(rows()[0].version, 2, "re-saving applies the current public base without discarding the private content");
   await browser.evaluate("document.querySelector('[data-testid=question-proposal-open]').click()");
   await browser.evaluate(setValue("#question-proposal-summary", "A 提交公共题库审核：补充边界和检查点。"));
   await browser.evaluate("document.querySelector('[data-testid=question-proposal-submit]').click()");
   await waitFor(() => proposalRows().length === 1, "A proposal SQLite snapshot");
-  assert.deepEqual(proposalRows().map((row) => ({ owner: row.owner_user_id, title: row.title, version: row.source_override_version, status: row.status })), [{ owner: "mock-user-a", title: "A 的私人 D13 题干", version: 1, status: "submitted" }]);
+  assert.deepEqual(proposalRows().map((row) => ({ owner: row.owner_user_id, title: row.title, version: row.source_override_version, status: row.status })), [{ owner: "mock-user-a", title: "A 的私人 D13 题干", version: 2, status: "submitted" }]);
   await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-status]')?.innerText.includes('变更申请待审核')"), "A proposal status");
   await waitFor(() => browser.evaluate("document.querySelector('#answer-draft') !== null"), "A study record ready");
   await browser.evaluate(setValue("#answer-draft", "只有 A 的私人作答"));
@@ -153,7 +168,7 @@ try {
 
   await browser.command("Page.reload", { ignoreCache: true });
   await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent === 'A 的私人 D13 题干'"), "A override after refresh");
-  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-status]')?.innerText.includes('私人版本 v1')"), "A proposal after refresh");
+  await waitFor(() => browser.evaluate("document.querySelector('[data-testid=question-proposal-status]')?.innerText.includes('私人版本 v2')"), "A proposal after refresh");
   await browser.evaluate("document.querySelector('[data-testid=question-private-open]').click()");
   await waitFor(() => browser.evaluate("document.querySelector('#private-question-title') !== null"), "A editor before account switch");
   assert.equal(await login("mock-user-b"), 200);
@@ -207,7 +222,68 @@ try {
   assert.equal(staleResponse, 409, "old page cannot delete recreated private version");
   assert.equal(rows().find((row) => row.owner_user_id === "mock-user-a").title, "A 再次创建");
 
-  process.stdout.write("Question private override browser flow passed: login, private save, proposal snapshot, refresh recovery, account isolation, withdrawal, and reset.\n");
+  const viewport = async (width, height) => browser.command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: width < 600 });
+  const questionText = async (qid) => {
+    await browser.command("Page.navigate", { url: `${origin}/questions/${qid}/` });
+    await waitFor(() => browser.evaluate("document.querySelector('.question-heading h1')?.textContent"), `${qid} question page`);
+    await waitFor(() => browser.evaluate("document.querySelector('#answer-draft') !== null"), `${qid} local study record ready`);
+    const hasAnswerActions = await browser.evaluate("document.querySelector('.answer-actions button') !== null");
+    if (hasAnswerActions) await browser.evaluate("document.querySelector('.answer-actions button').click()");
+    await waitFor(() => browser.evaluate("document.querySelector('.full-answer-accordion button') !== null"), `${qid} answer accordion`);
+    await browser.evaluate("document.querySelector('.full-answer-accordion button').click()");
+    return waitFor(() => browser.evaluate("document.querySelector('.coach-markdown-render')?.innerText || ''"), `${qid} article Markdown`);
+  };
+  await browser.command("Page.addScriptToEvaluateOnNewDocument", { source: "window.__xssProbe = 0" });
+  await viewport(1280, 900);
+  let rendered = await questionText("B07");
+  assert.match(rendered, /onerror="window\.__xssProbe=1"/u, "B07 HTML sample remains readable code text");
+  assert.match(rendered, /https:\/\/docs\.example\.test\/guide/u, "B07 complete safe URL remains visible");
+  assert.equal(await browser.evaluate("document.querySelector('.coach-markdown-render img') === null && window.__xssProbe === 0"), true, "B07 sample creates no image element and runs no event handler");
+  await viewport(390, 844);
+  rendered = await questionText("B07");
+  assert.match(rendered, /onerror="window\.__xssProbe=1"/u, "narrow B07 article retains the inert sample");
+  assert.equal(await browser.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, "B07 fits the narrow viewport without page-level horizontal overflow");
+
+  await viewport(1280, 900);
+  rendered = await questionText("B17");
+  assert.match(rendered, /Cross-Origin-Opener-Policy: same-origin/u, "B17 response header is readable at desktop width");
+  assert.match(rendered, /Cross-Origin-Embedder-Policy: require-corp/u);
+  await viewport(390, 844);
+  rendered = await questionText("B17");
+  assert.match(rendered, /Cross-Origin-Opener-Policy: same-origin/u, "B17 response header is readable at narrow width");
+  assert.equal(await browser.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, "B17 fits the narrow viewport without page-level horizontal overflow");
+
+  await viewport(1280, 900);
+  rendered = await questionText("A20");
+  assert.match(rendered, /AP17/u, "long AI article body is present at desktop width");
+  assert.match(rendered, /十、常见追问与完整参考答案/u);
+  await viewport(390, 844);
+  rendered = await questionText("A20");
+  assert.match(rendered, /十、常见追问与完整参考答案/u, "long AI article retains its complete sections at narrow width");
+  assert.equal(await browser.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, "A20 fits the narrow viewport without page-level horizontal overflow");
+
+  rendered = await questionText("A15");
+  assert.match(rendered, /Microsoft RAG 评估维度/u, "A15 full article retains its source link");
+  await viewport(390, 844);
+  await questionText("A15");
+  const a15Checkpoint = await browser.evaluate(`(() => {
+    const details = [...document.querySelectorAll('.assessment-card .checkpoint-copy details')].at(-1);
+    if (!details) return null;
+    details.querySelector('summary')?.click();
+    const paragraph = details.querySelector('p');
+    const host = details.parentElement;
+    return {
+      open: details.open,
+      text: paragraph?.innerText || '',
+      fits: Boolean(paragraph && paragraph.scrollWidth <= paragraph.clientWidth && host.scrollWidth <= host.clientWidth),
+    };
+  })()`);
+  assert.ok(a15Checkpoint?.open, `A15 long tenth-checkpoint details can be expanded on a narrow screen: ${JSON.stringify(a15Checkpoint)}`);
+  assert.match(a15Checkpoint.text, /file_id、filename、index/u, "expanded A15 checkpoint keeps its complete API identifier text");
+  assert.equal(a15Checkpoint.fits, true, "expanded A15 checkpoint text wraps within its narrow-screen column");
+  assert.equal(await browser.evaluate("document.documentElement.scrollWidth <= window.innerWidth"), true, "A15 expanded self-assessment fits the narrow viewport without page-level horizontal overflow");
+
+  process.stdout.write("Question private override and article browser flows passed: stale public-base warning and rebase, account isolation, B07 inert HTML, B17 response headers, A20 complete Markdown, and expanded A15 checkpoint at desktop and narrow widths.\n");
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`);
   process.exitCode = 1;

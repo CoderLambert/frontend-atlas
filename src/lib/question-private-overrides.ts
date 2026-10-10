@@ -5,6 +5,7 @@ export type QuestionPrivateOverride = {
   generationId: string;
   baseContentVersion: string;
   baseContentSha256: string;
+  publicBaseOutdated: boolean;
   title: string;
   explanationMarkdown: string;
   checkpoints: string[];

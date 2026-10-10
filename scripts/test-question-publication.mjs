@@ -17,7 +17,7 @@ const repoPath = join(tempRoot, "fixture-repo");
 const databasePath = join(tempRoot, "publication.sqlite");
 
 function run(command, args, cwd = repoPath, options = {}) {
-  const result = spawnSync(command, args, { cwd, encoding: "utf8", env: { ...process.env, ...options.env } });
+  const result = spawnSync(command, args, { cwd, encoding: "utf8", maxBuffer: 8 * 1024 * 1024, env: { ...process.env, ...options.env } });
   if (result.status !== 0 && !options.allowFailure) throw new Error(`${command} ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
   return { status: result.status, stdout: result.stdout.trim(), stderr: result.stderr.trim() };
 }

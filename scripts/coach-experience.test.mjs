@@ -59,6 +59,16 @@ test("Streamdown raw HTML stays inert and strict URL filtering rejects unsafe sc
   assert.match(markup, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
 });
 
+test("B07 fenced HTML sample renders as code text without an image or event handler element", () => {
+  const sample = '你好<strong>林</strong><img src="data:," onerror="window.__xssProbe=1"><a href="https://docs.example.test/guide">资料</a>';
+  const markup = renderCoachMarkdown(`\`\`\`html\n${sample}\n\`\`\``);
+  assert.match(markup, /&lt;img/u);
+  assert.match(markup, /onerror=/u);
+  assert.match(markup, /https:\/\/docs\.example\.test\/guide/u);
+  assert.doesNotMatch(markup, /<img\b[^>]*onerror=/iu);
+  assert.doesNotMatch(markup, /window\.__xssProbe=1"><a/u);
+});
+
 test("Streamdown images become inert alt text in streaming and static output", () => {
   const source = "![面试答案](https://tracking.example/pixel?answer=private-content)";
   for (const stage of ["streaming", "final"]) {

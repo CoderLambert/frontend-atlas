@@ -119,7 +119,7 @@ export class QuestionPrivateOverrideService {
   find(ownerUserId: string, qid: string) {
     if (!this.knownQids.has(qid)) return { kind: "not-found" as const };
     const value = this.repository.find(ownerUserId, qid);
-    return { kind: "found" as const, value: value ? present(value) : null };
+    return { kind: "found" as const, value: value ? this.present(value) : null };
   }
 
   save(ownerUserId: string, qid: string, body: Record<string, unknown>) {
@@ -130,8 +130,8 @@ export class QuestionPrivateOverrideService {
     if (!baseContentSha256) return { kind: "not-found" as const };
     const result = this.repository.save(ownerUserId, qid, { ...input, baseContentVersion: this.publicContentVersion, baseContentSha256 });
     return result.kind === "saved"
-      ? { kind: "saved" as const, value: present(result.value) }
-      : { kind: "conflict" as const, current: result.current ? present(result.current) : null };
+      ? { kind: "saved" as const, value: this.present(result.value) }
+      : { kind: "conflict" as const, current: result.current ? this.present(result.current) : null };
   }
 
   delete(ownerUserId: string, qid: string, body: Record<string, unknown>) {
@@ -139,8 +139,13 @@ export class QuestionPrivateOverrideService {
     if (!Number.isSafeInteger(body.expectedVersion) || (body.expectedVersion as number) < 1 || !validGenerationId(body.expectedGenerationId)) return { kind: "invalid" as const };
     const result = this.repository.delete(ownerUserId, qid, body.expectedVersion as number, body.expectedGenerationId as string);
     return result.kind === "conflict"
-      ? { kind: "conflict" as const, current: present(result.current) }
+      ? { kind: "conflict" as const, current: this.present(result.current) }
       : result;
+  }
+
+  private present(value: StoredOverride) {
+    const currentHash = this.publicContentHashes.get(value.qid);
+    return { ...present(value), publicBaseOutdated: !currentHash || value.baseContentSha256 !== currentHash };
   }
 }
 

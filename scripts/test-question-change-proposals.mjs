@@ -96,6 +96,7 @@ try {
     { id: "user-a", name: "A", email: "a@example.test", createdAt: now, updatedAt: now },
     { id: "user-b", name: "B", email: "b@example.test", createdAt: now, updatedAt: now },
     { id: "user-c", name: "C", email: "c@example.test", createdAt: now, updatedAt: now },
+    { id: "user-d", name: "D", email: "d@example.test", createdAt: now, updatedAt: now },
   ]).run();
 
   const sessions = {
@@ -108,8 +109,9 @@ try {
     sessions,
     { trustedOriginUrl: "http://localhost" },
   );
+  let proposalPublicHash = "hash-v1";
   const makeProposalHandlers = () => createQuestionChangeProposalHandlers(
-    new QuestionChangeProposalService(new QuestionChangeProposalRepository(opened.db), new Set(["Q1"]), "content-v1", new Map([["Q1", "hash-v1"]])),
+    new QuestionChangeProposalService(new QuestionChangeProposalRepository(opened.db), new Set(["Q1"]), "content-v1", new Map([["Q1", proposalPublicHash]])),
     sessions,
     { trustedOriginUrl: "http://localhost" },
   );
@@ -135,6 +137,23 @@ try {
   response = await privateHandlers.save(request("user-c", "PATCH", "Q1", overrideInput(null, null, "C 私人题干")), context("Q1"));
   assert.equal(response.status, 201);
   const sourceC = (await response.json()).override;
+
+  response = await privateHandlers.save(request("user-d", "PATCH", "Q1", overrideInput(null, null, "D 第一版")), context("Q1"));
+  assert.equal(response.status, 201);
+  const sourceD = (await response.json()).override;
+  response = await privateHandlers.save(request("user-d", "PATCH", "Q1", overrideInput(sourceD.version, sourceD.generationId, "D 第二版")), context("Q1"));
+  assert.equal(response.status, 200);
+  proposalPublicHash = "hash-v2";
+  proposalHandlers = makeProposalHandlers();
+  response = await proposalHandlers.submit(request("user-d", "POST", "Q1", submitInput(sourceD)), context("Q1"));
+  assert.equal(response.status, 409);
+  const privateConflict = await response.json();
+  assert.equal(privateConflict.error, "private_version_conflict");
+  assert.equal(privateConflict.override.version, 2, "conflict includes the newer private version");
+  assert.equal(privateConflict.override.baseContentSha256, "hash-v1", "conflict includes the stored public base hash");
+  assert.equal(privateConflict.override.publicBaseOutdated, true, "conflict DTO preserves stale-public-base warning state");
+  proposalPublicHash = "hash-v1";
+  proposalHandlers = makeProposalHandlers();
 
   const workers = Array.from({ length: 8 }, (_, index) => createProposalWorker({
     databasePath,

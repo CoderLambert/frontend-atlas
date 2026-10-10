@@ -2,18 +2,19 @@ import questionMapJson from "@/content/knowledge-map.source.json";
 import chapterJson from "@/content/knowledge-chapters.source.json";
 import questionIndexJson from "@/content/question-index.generated.json";
 import topicIndexJson from "@/content/topic-index.generated.json";
+export { questionContentVersion } from "@/lib/question-version";
 
 export type ContentLink = { label: string; target: string };
 export type ContentBlock = { kind: "paragraph" | "heading" | "code"; text: string; language?: string; links?: ContentLink[] };
 export type QuestionSource = { filename?: string; version?: number; sha256?: string; bookmark?: string; interview_year?: number; evidence_level?: string; limitations?: string[]; [key: string]: unknown };
 export type MasterQuestion = {
   qid: string; title: string; primary: string; subtopic: string; tags: string[]; mode: string;
-  prerequisites: string[]; topic_id: string; source: QuestionSource; original_metadata?: string;
+  prerequisites: string[]; topic_id: string; source: QuestionSource; content_revision?: string; original_metadata?: string;
   content: ContentBlock[]; explanation_markdown?: string; checkpoints?: string[]; index_anchor: string;
 };
 export type CompanyQuestion = {
   qid: string; company: string; title: string; master_ids: string[]; topic_ids: string[];
-  source_ids: string[]; source: QuestionSource; content: ContentBlock[]; explanation_markdown?: string; checkpoints?: string[]; index_anchor: string;
+  source_ids: string[]; source: QuestionSource; content_revision?: string; content: ContentBlock[]; explanation_markdown?: string; checkpoints?: string[]; index_anchor: string;
 };
 export type Topic = { topic_id: string; primary: string; subtopic: string; question_ids: string[]; index_anchor: string; display_order: number[] };
 export type Checkpoint = { id: string; label: string; text: string };

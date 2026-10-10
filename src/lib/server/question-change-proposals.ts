@@ -239,7 +239,10 @@ export class QuestionChangeProposalService {
       return { kind: result.kind, current: presentProposal(result.current) } as const;
     }
     if (result.kind === "override-conflict") {
-      return { kind: result.kind, current: presentOverride(result.current) } as const;
+      return { kind: result.kind, current: presentOverride(result.current, this.publicContentHashes.get(qid)) } as const;
+    }
+    if (result.kind === "public-base-conflict") {
+      return { kind: result.kind, current: presentOverride(result.current, this.publicContentHashes.get(qid)) } as const;
     }
     return result;
   }
@@ -299,11 +302,13 @@ function presentProposal(value: StoredProposal) {
   };
 }
 
-function presentOverride(value: StoredOverride) {
+function presentOverride(value: StoredOverride, currentPublicHash: string | undefined) {
   return {
     qid: value.qid,
     generationId: value.generationId,
     baseContentVersion: value.baseContentVersion,
+    baseContentSha256: value.baseContentSha256,
+    publicBaseOutdated: !currentPublicHash || value.baseContentSha256 !== currentPublicHash,
     title: value.title,
     explanationMarkdown: value.explanationMarkdown,
     checkpoints: parseCheckpoints(value.checkpointsJson),
@@ -360,7 +365,7 @@ export function createQuestionChangeProposalHandlers(
       if (result.kind === "invalid") return json({ error: "invalid_proposal" }, 400);
       if (result.kind === "override-required") return json({ error: "private_override_required" }, 409);
       if (result.kind === "override-conflict") return json({ error: "private_version_conflict", override: result.current }, 409);
-      if (result.kind === "public-base-conflict") return json({ error: "public_base_conflict", override: presentOverride(result.current) }, 409);
+      if (result.kind === "public-base-conflict") return json({ error: "public_base_conflict", override: result.current }, 409);
       if (result.kind === "active-conflict") return json({ error: "active_proposal_exists", proposal: result.current }, 409);
       if (result.kind === "withdrawn-source") return json({ error: "proposal_withdrawn", proposal: result.value }, 409);
       if (result.kind === "decided-source") return json({ error: "proposal_source_processed", proposal: result.value }, 409);

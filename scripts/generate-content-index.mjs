@@ -1,11 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { assertUniqueIds } from "./content-validation.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(here, "..");
-const contentDir = path.join(projectRoot, "src", "content");
+export function generateContentArtifacts({
+  contentDir = process.env.FRONTEND_ATLAS_CONTENT_DIR
+    ? path.resolve(process.env.FRONTEND_ATLAS_CONTENT_DIR)
+    : path.join(projectRoot, "src", "content"),
+  writeFiles = true,
+} = {}) {
 const map = JSON.parse(fs.readFileSync(path.join(contentDir, "knowledge-map.source.json"), "utf8"));
 const chapters = JSON.parse(fs.readFileSync(path.join(contentDir, "knowledge-chapters.source.json"), "utf8"));
 
@@ -49,6 +54,12 @@ assert(allQuestions.every((question) => question.checkpoints === undefined
   || (Array.isArray(question.checkpoints) && question.checkpoints.length > 0
     && question.checkpoints.every((checkpoint) => typeof checkpoint === "string" && Boolean(checkpoint.trim())))),
 "explicit question checkpoints must be non-empty strings");
+assert(allQuestions.every((question) => question.content_revision === undefined
+  || (typeof question.content_revision === "string" && /^\d{4}-\d{2}-\d{2}\.\d+$/u.test(question.content_revision))),
+"question content revisions must use a stable dated version string");
+assert(allQuestions.every((question) => question.content_revision === undefined
+  || (typeof question.explanation_markdown === "string" && Array.isArray(question.checkpoints))),
+"question content revisions require matching explicit Markdown and assessment checkpoints");
 assert(chapters.chapters.every((chapter) => chapter.mechanisms.length > 0 && chapter.exercises.length === 2), "every chapter needs core content and two exercises");
 
 const d13 = map.master_questions.find((question) => question.qid === "D13");
@@ -70,7 +81,7 @@ const searchText = (question) => [
   ...(question.tags ?? []),
   question.explanation_markdown,
   ...(question.checkpoints ?? []),
-  ...(question.content ?? []).filter((block) => block.kind !== "code").map((block) => block.text),
+  ...(question.explanation_markdown ? [] : (question.content ?? []).filter((block) => block.kind !== "code").map((block) => block.text)),
 ].filter(Boolean).join(" ").toLocaleLowerCase("zh-CN");
 
 const questionIndex = [
@@ -127,9 +138,7 @@ const topicIndex = map.topics.map((topic) => ({
   })(),
 }));
 
-fs.writeFileSync(path.join(contentDir, "question-index.generated.json"), `${JSON.stringify(questionIndex)}\n`);
-fs.writeFileSync(path.join(contentDir, "topic-index.generated.json"), `${JSON.stringify(topicIndex)}\n`);
-fs.writeFileSync(path.join(contentDir, "content-manifest.generated.json"), `${JSON.stringify({
+const manifest = {
   schemaVersion: 1,
   contentVersion: chapters.content_version,
   masterQuestionCount: map.master_questions.length,
@@ -137,9 +146,15 @@ fs.writeFileSync(path.join(contentDir, "content-manifest.generated.json"), `${JS
   chapterCount: chapters.chapters.length,
   exerciseCount,
   domainCount: new Set(map.topics.map((topic) => topic.primary)).size,
-}, null, 2)}\n`);
+};
 
-console.log(JSON.stringify({
+if (writeFiles) {
+  fs.writeFileSync(path.join(contentDir, "question-index.generated.json"), `${JSON.stringify(questionIndex)}\n`);
+  fs.writeFileSync(path.join(contentDir, "topic-index.generated.json"), `${JSON.stringify(topicIndex)}\n`);
+  fs.writeFileSync(path.join(contentDir, "content-manifest.generated.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+const summary = {
   status: "ok",
   masterQuestions: map.master_questions.length,
   companyVariants: map.company_questions.length,
@@ -148,4 +163,10 @@ console.log(JSON.stringify({
   domains: new Set(map.topics.map((topic) => topic.primary)).size,
   contentVersion: chapters.content_version,
   generated: ["question-index.generated.json", "topic-index.generated.json", "content-manifest.generated.json"],
-}));
+};
+return { summary, questionIndex, topicIndex, manifest };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  console.log(JSON.stringify(generateContentArtifacts().summary));
+}
