@@ -464,5 +464,5 @@ try {
   browserSockets.clear();
   await stopProcess(chromeProcess);
   await stopProcess(nextProcess);
-  rmSync(tempRoot, { recursive: true, force: true });
+  rmSync(tempRoot, { recursive: true, force: true, maxRetries: 30, retryDelay: 200 });
 }
