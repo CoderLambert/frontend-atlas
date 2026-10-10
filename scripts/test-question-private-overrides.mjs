@@ -60,8 +60,9 @@ try {
       return incoming.headers.get("cookie")?.match(/session=([^;]+)/u)?.[1] ?? null;
     },
   };
+  const publicHashes = new Map([["Q1", "hash-v1"], ["Q2", "hash-q2"]]);
   const makeHandlers = () => createQuestionPrivateOverrideHandlers(
-    new QuestionPrivateOverrideService(new QuestionPrivateOverrideRepository(opened.db), new Set(["Q1"]), "content-v1", new Map([["Q1", "hash-v1"]])),
+    new QuestionPrivateOverrideService(new QuestionPrivateOverrideRepository(opened.db), new Set(["Q1", "Q2"]), "content-v1", publicHashes),
     sessions,
     { trustedOriginUrl: "http://localhost" },
   );
@@ -87,7 +88,28 @@ try {
   assert.equal(first.title, "我的题干");
   assert.equal(first.baseContentVersion, "content-v1", "the server records the trusted public content version, not a client claim");
   assert.equal(first.baseContentSha256, "hash-v1", "the server records the trusted public content hash");
+  assert.equal(first.publicBaseOutdated, false, "new override is based on the current public snapshot");
   assert.equal(new QuestionPrivateOverrideRepository(opened.db).find("user-b", "Q1"), null, "owner comes only from the verified session");
+
+  publicHashes.set("Q1", "hash-v2");
+  response = await handlers.read(request("user-a", "GET", "Q1"), context("Q1"));
+  let staleA = (await response.json()).override;
+  assert.equal(staleA.publicBaseOutdated, true, "same global content version still detects changed public question snapshot");
+  assert.equal(staleA.title, "我的题干");
+  assert.equal(staleA.baseContentSha256, "hash-v1");
+  response = await handlers.read(request("user-b", "GET", "Q1"), context("Q1"));
+  assert.equal((await response.json()).override, null, "stale-state DTO does not leak A's private content to B");
+  response = await handlers.save(request("user-a", "PATCH", "Q1", input(1, "按最新公共底稿重定基线", first.generationId)), context("Q1"));
+  assert.equal(response.status, 200);
+  staleA = (await response.json()).override;
+  assert.equal(staleA.publicBaseOutdated, false, "saving against the current public snapshot clears the stale signal");
+  assert.equal(staleA.baseContentSha256, "hash-v2");
+
+  response = await handlers.save(request("user-a", "PATCH", "Q2", input(null, "Q2 私人题干")), context("Q2"));
+  assert.equal(response.status, 201);
+  assert.equal((await response.json()).override.publicBaseOutdated, false);
+  response = await handlers.read(request("user-a", "GET", "Q2"), context("Q2"));
+  assert.equal((await response.json()).override.publicBaseOutdated, false, "unrelated public question hash remains current");
 
   response = await handlers.read(request("user-b", "GET", "Q1"), context("Q1"));
   assert.equal((await response.json()).override, null, "another user cannot see A's override");
@@ -97,9 +119,9 @@ try {
 
   response = await handlers.save(request("user-a", "PATCH", "Q1", input(null, "错误覆盖")), context("Q1"));
   assert.equal(response.status, 409, "create cannot overwrite an existing private version");
-  response = await handlers.save(request("user-a", "PATCH", "Q1", input(1, "A 的第二版", first.generationId)), context("Q1"));
+  response = await handlers.save(request("user-a", "PATCH", "Q1", input(2, "A 的第二版", first.generationId)), context("Q1"));
   assert.equal(response.status, 200);
-  assert.equal((await response.json()).override.version, 2);
+  assert.equal((await response.json()).override.version, 3);
   response = await handlers.save(request("user-a", "PATCH", "Q1", input(1, "过期标签页", first.generationId)), context("Q1"));
   assert.equal(response.status, 409, "stale edits do not overwrite the latest private version");
 
@@ -112,12 +134,12 @@ try {
   response = await handlers.read(request("user-a", "GET", "Q1"), context("Q1"));
   const recovered = (await response.json()).override;
   assert.equal(recovered.title, "A 的第二版", "private override survives a database restart");
-  assert.equal(recovered.version, 2);
+  assert.equal(recovered.version, 3);
   assert.equal(recovered.generationId, first.generationId, "generation survives restart");
 
   response = await handlers.delete(request("user-a", "DELETE", "Q1", { expectedVersion: 1, expectedGenerationId: first.generationId }), context("Q1"));
   assert.equal(response.status, 409, "stale delete is rejected");
-  response = await handlers.delete(request("user-a", "DELETE", "Q1", { expectedVersion: 2, expectedGenerationId: first.generationId }), context("Q1"));
+  response = await handlers.delete(request("user-a", "DELETE", "Q1", { expectedVersion: 3, expectedGenerationId: first.generationId }), context("Q1"));
   assert.equal(response.status, 200);
   response = await handlers.read(request("user-a", "GET", "Q1"), context("Q1"));
   assert.equal((await response.json()).override, null);

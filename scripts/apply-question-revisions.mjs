@@ -86,8 +86,22 @@ export function normalizeMarkdown(record) {
     if (processOnly.test(line)) continue;
     if (/^原讨论线程：/u.test(line)) continue;
     if (/尚未替换 Slack 修订/u.test(line)) continue;
-    if (/没有修改题库/u.test(line)) continue;
-    if (/也没有修改已交付导出包或导入工具/u.test(line)) continue;
+    if (line.endsWith("，也没有修改已交付导出包或导入工具。")) {
+      output.push(line.slice(0, -"，也没有修改已交付导出包或导入工具。".length) + "。");
+      continue;
+    }
+    if (line.endsWith("本次没有修改题库、既有导出包或导入工具。")) {
+      output.push(line.slice(0, -"本次没有修改题库、既有导出包或导入工具。".length).trimEnd());
+      continue;
+    }
+    if (line.endsWith("未配置网站、运行样例、启动浏览器测试或修改题库。")) {
+      output.push(line.slice(0, -"未配置网站、运行样例、启动浏览器测试或修改题库。".length).trimEnd());
+      continue;
+    }
+    if (line.endsWith("未运行浏览器、执行样例、迁移实际数据或修改题库。")) {
+      output.push(line.slice(0, -"未运行浏览器、执行样例、迁移实际数据或修改题库。".length).trimEnd());
+      continue;
+    }
     output.push(line);
   }
   const markdown = output.join("\n").replace(/^\n+|\n+$/gu, "");
@@ -103,7 +117,8 @@ export function extractCheckpoints(markdown, qid) {
     /^[一二三四五六七八九十]+、/u.test(line) && /自评|检查点|判定标准/u.test(line));
   assert(headingIndex >= 0, qid + " has no explicit self-assessment section");
   let end = headingIndex + 1;
-  while (end < lines.length && !/^[一二三四五六七八九十]+、/u.test(lines[end])) end += 1;
+  const postscript = /^(?:实际核读的一手资料|实际核对的一手资料|实际核查的一手资料|参考资料(?:来源)?|参考文献|Sources|References|能够说清每个条件|本题的掌握标准|自评合格的核心|本次(?:修订|保留原稿))/iu;
+  while (end < lines.length && !/^[一二三四五六七八九十]+、/u.test(lines[end]) && !postscript.test(lines[end])) end += 1;
   const checkpoints = [];
   for (let index = headingIndex + 1; index < end; index += 1) {
     const item = lines[index].match(/^\s*(\d+)[.、）)]\s*(.*)$/u);
@@ -237,10 +252,10 @@ export function prepareRevisionBatch({ rootDir, sourcePath } = {}) {
   const raw = fs.readFileSync(inputPath);
   const document = JSON.parse(raw.toString("utf8"));
   validateDocument(document, raw);
-  const mapPath = path.join(root, MAP_FILE);
-  const chapterPath = path.join(root, CHAPTER_FILE);
-  const map = JSON.parse(fs.readFileSync(mapPath, "utf8"));
-  const chapters = JSON.parse(fs.readFileSync(chapterPath, "utf8"));
+  const fileBytes = new Map(GENERATED_FILES.map((file) => [file, fs.readFileSync(path.join(root, file))]));
+  const fileHashes = new Map([...fileBytes].map(([file, bytes]) => [file, sha256(bytes)]));
+  const map = JSON.parse(fileBytes.get(MAP_FILE).toString("utf8"));
+  const chapters = JSON.parse(fileBytes.get(CHAPTER_FILE).toString("utf8"));
   const plan = [];
   for (const record of document.records) {
     const question = locateQuestion(map, record.qid);
@@ -264,7 +279,7 @@ export function prepareRevisionBatch({ rootDir, sourcePath } = {}) {
     assert(references.length === 1, item.record.qid + " must have exactly one chapter question reference");
     if (item.alreadyApplied) assert(references[0].title === item.title, item.record.qid + " chapter reference differs from the applied title");
   }
-  return { root, map, chapters, plan, allAlreadyApplied: plan.every((item) => item.alreadyApplied) };
+  return { root, map, chapters, plan, fileHashes, allAlreadyApplied: plan.every((item) => item.alreadyApplied) };
 }
 
 function applyPlan(prepared) {
@@ -300,7 +315,9 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2) + "\n");
 }
 
-function installArtifacts(root, stageDir, candidateDir, failAfterRenames = null) {
+function installArtifacts(root, stageDir, candidateDir, expectedHashes, failAfterRenames = null) {
+  const installHashes = new Map(expectedHashes);
+  assertGeneratedFilesUnchanged(root, expectedHashes);
   const backupDir = path.join(stageDir, "backup");
   fs.mkdirSync(backupDir);
   for (const file of GENERATED_FILES) {
@@ -310,12 +327,14 @@ function installArtifacts(root, stageDir, candidateDir, failAfterRenames = null)
   const moved = [];
   try {
     for (const [index, file] of GENERATED_FILES.entries()) {
+      assertGeneratedFilesUnchanged(root, installHashes);
       const destination = path.join(root, file);
       const backup = path.join(backupDir, path.basename(file));
       const candidate = path.join(candidateDir, path.basename(file));
       fs.renameSync(destination, path.join(backupDir, "installed-" + index));
       moved.push({ destination, backup });
       fs.renameSync(candidate, destination);
+      installHashes.set(file, sha256(fs.readFileSync(destination)));
       if (failAfterRenames === index + 1) throw new Error("simulated atomic install failure");
     }
   } catch (error) {
@@ -333,7 +352,40 @@ function installArtifacts(root, stageDir, candidateDir, failAfterRenames = null)
   }
 }
 
-export function applyRevisionBatch({ rootDir, sourcePath, failAfterRenamesForTest = null } = {}) {
+function assertGeneratedFilesUnchanged(root, expectedHashes) {
+  for (const file of GENERATED_FILES) {
+    const currentHash = sha256(fs.readFileSync(path.join(root, file)));
+    assert(currentHash === expectedHashes.get(file), file + " changed after revision preparation; refusing to overwrite concurrent edits");
+  }
+}
+
+function acquireRevisionLock(root) {
+  const lockPath = path.join(root, ".question-revisions.lock");
+  let descriptor;
+  try {
+    descriptor = fs.openSync(lockPath, "wx", 0o600);
+  } catch (error) {
+    if (error?.code === "EEXIST") throw new Error("question revision import lock exists; another apply may be running or a stale lock needs manual recovery: " + lockPath);
+    throw error;
+  }
+  fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }) + "\n");
+  return () => {
+    fs.closeSync(descriptor);
+    fs.rmSync(lockPath, { force: true });
+  };
+}
+
+export function applyRevisionBatch({ rootDir, sourcePath, failAfterRenamesForTest = null, beforeInstallForTest = null } = {}) {
+  const root = path.resolve(rootDir || path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+  const releaseLock = acquireRevisionLock(root);
+  try {
+    return applyRevisionBatchLocked({ rootDir: root, sourcePath, failAfterRenamesForTest, beforeInstallForTest });
+  } finally {
+    releaseLock();
+  }
+}
+
+function applyRevisionBatchLocked({ rootDir, sourcePath, failAfterRenamesForTest, beforeInstallForTest }) {
   const prepared = prepareRevisionBatch({ rootDir, sourcePath });
   if (prepared.allAlreadyApplied) return { status: "already-applied", qids: TARGET_QIDS, writtenFiles: [] };
   applyPlan(prepared);
@@ -349,7 +401,8 @@ export function applyRevisionBatch({ rootDir, sourcePath, failAfterRenamesForTes
       const candidate = path.join(candidateDir, path.basename(file));
       assert(fs.existsSync(candidate), "candidate generation omitted " + file);
     }
-    installArtifacts(root, stageDir, candidateDir, failAfterRenamesForTest);
+    beforeInstallForTest?.(root);
+    installArtifacts(root, stageDir, candidateDir, prepared.fileHashes, failAfterRenamesForTest);
   } catch (error) {
     if (!(error instanceof Error) || !error.message.includes("rollback was incomplete")) {
       fs.rmSync(stageDir, { recursive: true, force: true });
@@ -373,16 +426,17 @@ function parseArgs(args) {
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
-  const prepared = prepareRevisionBatch(options);
-  if (prepared.allAlreadyApplied) {
-    console.log(JSON.stringify({ mode: options.apply ? "apply" : "dry-run", status: "already-applied", qids: TARGET_QIDS }));
-    return;
-  }
   if (!options.apply) {
+    const prepared = prepareRevisionBatch(options);
+    if (prepared.allAlreadyApplied) {
+      console.log(JSON.stringify({ mode: "dry-run", status: "already-applied", qids: TARGET_QIDS }));
+      return;
+    }
     console.log(JSON.stringify({ mode: "dry-run", status: "validated", qids: TARGET_QIDS, plannedFiles: GENERATED_FILES }));
     return;
   }
-  console.log(JSON.stringify({ mode: "apply", ...applyRevisionBatch(options) }));
+  const result = applyRevisionBatch(options);
+  console.log(JSON.stringify({ mode: "apply", ...result }));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

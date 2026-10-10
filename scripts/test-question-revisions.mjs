@@ -39,6 +39,7 @@ const fileNames = [
   "topic-index.generated.json",
   "content-manifest.generated.json",
 ];
+const expectedCheckpointCounts = { A17: 8, A16: 10, A15: 10, A19: 12, B17: 12, A09: 12, B18: 12, A20: 9, B07: 9 };
 
 function snapshotContentFiles(repo) {
   return new Map(fileNames.map((name) => [name, inputHash(fs.readFileSync(path.join(repo, "src/content", name)))]));
@@ -80,6 +81,7 @@ try {
   assert.equal(dry.allAlreadyApplied, false);
   assert.equal(dry.plan.length, 9);
   assert.deepEqual(snapshotContentFiles(dryRunRepo), dryBefore, "default dry-run must not write canonical or generated files");
+  assert.equal(fs.existsSync(path.join(dryRunRepo, ".question-revisions.lock")), false, "dry-run does not claim the apply lock");
 
   const failedRepo = path.join(fixtureDir, "rollback");
   copyFixture(failedRepo);
@@ -88,11 +90,35 @@ try {
   assert.deepEqual(snapshotContentFiles(failedRepo), failedBefore, "failed multi-file install must roll back every file");
   assert.equal(fs.readdirSync(failedRepo).some((name) => name.startsWith(".question-revisions-stage-")), false);
 
+  const lockedRepo = path.join(fixtureDir, "locked");
+  copyFixture(lockedRepo);
+  fs.writeFileSync(path.join(lockedRepo, ".question-revisions.lock"), "another apply\n");
+  const lockedBefore = snapshotContentFiles(lockedRepo);
+  assert.throws(() => applyRevisionBatch({ rootDir: lockedRepo }), /lock exists/u);
+  assert.deepEqual(snapshotContentFiles(lockedRepo), lockedBefore, "competing apply must fail before writing");
+
+  const racedRepo = path.join(fixtureDir, "concurrent-edit");
+  copyFixture(racedRepo);
+  const racedMapPath = path.join(racedRepo, "src/content/knowledge-map.source.json");
+  const untouchedQid = JSON.parse(fs.readFileSync(racedMapPath, "utf8")).master_questions.find((question) => !TARGET_QIDS.includes(question.qid)).qid;
+  assert.throws(() => applyRevisionBatch({
+    rootDir: racedRepo,
+    beforeInstallForTest: () => {
+      const changed = JSON.parse(fs.readFileSync(racedMapPath, "utf8"));
+      changed.master_questions.find((question) => question.qid === untouchedQid).title = "concurrent unrelated edit";
+      fs.writeFileSync(racedMapPath, JSON.stringify(changed, null, 2) + "\n");
+    },
+  }), /changed after revision preparation/u);
+  const racedMap = JSON.parse(fs.readFileSync(racedMapPath, "utf8"));
+  assert.equal(racedMap.master_questions.find((question) => question.qid === untouchedQid).title, "concurrent unrelated edit", "concurrent unrelated change is preserved");
+  assert.equal(racedMap.master_questions.find((question) => question.qid === "A17").content_revision, undefined, "no revision writes occur after a detected race");
+
   const repo = path.join(fixtureDir, "apply");
   copyFixture(repo);
   const applied = applyRevisionBatch({ rootDir: repo });
   assert.equal(applied.status, "applied");
   assert.deepEqual(applied.qids, TARGET_QIDS);
+  assert.equal(fs.existsSync(path.join(repo, ".question-revisions.lock")), false, "successful apply releases its lock");
   const appliedMap = JSON.parse(fs.readFileSync(path.join(repo, "src/content/knowledge-map.source.json"), "utf8"));
   const appliedChapters = JSON.parse(fs.readFileSync(path.join(repo, "src/content/knowledge-chapters.source.json"), "utf8"));
   const appliedIndex = JSON.parse(fs.readFileSync(path.join(repo, "src/content/question-index.generated.json"), "utf8"));
@@ -112,11 +138,13 @@ try {
     const question = appliedById.get(qid);
     assert.equal(question.content_revision, "2026-10-10.1");
     assert.ok(question.explanation_markdown.length > 8_000, qid + " complete article was truncated");
-    assert.ok(question.checkpoints.length >= 8 && question.checkpoints.length <= 12);
+    assert.equal(question.checkpoints.length, expectedCheckpointCounts[qid], qid + " self-assessment count matches the reviewed rubric");
     assert.ok(question.checkpoints.every((checkpoint) => checkpoint.length > 0 && checkpoint.length <= 2_000));
+    assert.ok(!question.checkpoints.some((checkpoint) => /实际核读的一手资料|实际核对的一手资料|能够说清每个条件|本题的掌握标准|本次修订保留|本次保留原稿/iu.test(checkpoint)), qid + " checkpoints must exclude postscript and source notes");
     assert.equal(question.source.revisionProvenance.documentSha256, "55911860b8119523dd4778d1724a2e9faf70a49c03e66843bfbb6c7a45dd55c2");
     assert.equal(question.source.revisionProvenance.validationStatus, "NOT_RUN");
     assert.equal(question.source.revisionProvenance.parentContentReviewPassed, true);
+    assert.ok(!/尚未修改题库|没有修改题库|或修改题库/u.test(question.explanation_markdown), qid + " display body excludes stale import-process notes");
     const changedHash = publicQuestionSnapshotSha256(publicQuestionSnapshot(question));
     assert.notEqual(changedHash, baseSnapshots.get(qid), qid + " snapshot must invalidate stale private/proposal bases");
     const indexEntry = appliedIndex.find((entry) => entry.qid === qid);
@@ -145,11 +173,25 @@ try {
   assert.ok(b07.content.some((block) => block.kind === "code" && block.language === "html" && block.text.includes("onerror=\"window.__xssProbe=1\"")));
   assert.ok(b07.source.revisionProvenance.migration.notice.includes("重新编写"));
   assert.equal(b07.source.revisionProvenance.migration.changes[0].originalRestoredExactly, false);
+  assert.ok(b07.explanation_markdown.includes("固定原始输入 P（2026-10-10 迁移重写的完整教学样例"));
+  assert.ok(b07.explanation_markdown.includes("另设用户输入 Q："));
+  assert.ok(b07.explanation_markdown.includes("https://docs.example.test/guide"));
 
   const b17 = appliedById.get("B17");
   assert.ok(b17.explanation_markdown.includes("Cross-Origin-Opener-Policy: same-origin"));
   assert.ok(b17.explanation_markdown.includes("Cross-Origin-Embedder-Policy: require-corp"));
   assert.ok(b17.explanation_markdown.includes("NOT_RUN"));
+  assert.ok(b17.content.some((block) => block.text.includes("Cross-Origin-Opener-Policy: same-origin")));
+  const a17 = appliedById.get("A17");
+  assert.ok(a17.explanation_markdown.includes("相邻题分工：A01 负责流解码与事件边界"));
+  assert.ok(!a17.explanation_markdown.includes("也没有修改已交付导出包或导入工具"));
+  assert.ok(a17.explanation_markdown.includes("能够说清每个条件由哪一层判断"));
+  const a16 = appliedById.get("A16");
+  assert.ok(a16.explanation_markdown.includes("这些资料支持协议、组件与框架的具体边界"));
+  assert.ok(a16.explanation_markdown.includes("原稿有关历史不可错配、草稿保留、摘要来源、权限与外部副作用的提醒均保留。"));
+  assert.ok(!a16.explanation_markdown.includes("本次没有修改题库"));
+  assert.ok(a17.explanation_markdown.includes("实际核读的一手资料，2026-10-09"), "source notes remain in the full article");
+  assert.ok(a16.explanation_markdown.includes("实际核读的一手资料，2026-10-09"), "source notes remain in the full article");
   const aiLong = appliedById.get("A20");
   assert.ok(aiLong.explanation_markdown.length > 10_000);
   assert.ok(aiLong.explanation_markdown.includes("AP17"));

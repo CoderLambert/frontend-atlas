@@ -52,6 +52,10 @@ jobs:
         run: npm run test:study-store
       - name: Backup validation
         run: npm run test:backup
+      - name: Question revision import and Markdown rendering
+        run: |
+          npm run test:question-revisions
+          npm run test:coach
       - name: Browser account, assistant, and question flows
         run: |
           CHROME="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"

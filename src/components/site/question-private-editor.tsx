@@ -414,8 +414,8 @@ export function QuestionPrivateEditor({
         {loading ? <p><LoaderCircle className="animate-spin" aria-hidden="true" /> 正在读取站点账号…</p> : account ? (
           <>
             <p>{override ? `已应用 v${override.version}，仅 ${account.email} 可见。` : "当前使用公共题库内容；可为这个账号保存私人覆盖。"}</p>
-            {override && <small>基于公共内容 {override.baseContentVersion} · {new Date(override.updatedAt).toLocaleString("zh-CN")}</small>}
-            {override && override.baseContentVersion !== contentVersion && <p className="content-version-warning" role="status">公共题库已更新；这份私人版本仍保留原基线。再次保存会以当前公共版本作为新基线。</p>}
+            {override && <small>基于公共内容 {override.baseContentVersion}{override.baseContentVersion === contentVersion ? "" : ` · 当前题库版本 ${contentVersion}`} · {new Date(override.updatedAt).toLocaleString("zh-CN")}</small>}
+            {override?.publicBaseOutdated && <p className="content-version-warning" role="status" data-testid="private-public-base-outdated">公共题库内容已更新；这份私人版本仍保留旧底稿且目前继续应用。编辑并保存可按最新公共底稿重新定基线；若要直接使用公共版本，请选择“恢复公共版本”。再次申请公共审核前请核对最新内容。</p>}
             <div className="private-editor-actions">
               <Button type="button" variant="outline" size="sm" onClick={openEditor} data-testid="question-private-open"><PencilLine aria-hidden="true" />{override ? "编辑私人版本" : "创建私人版本"}</Button>
               {override && <Button type="button" variant="ghost" size="sm" onClick={() => setResetOpen(true)} data-testid="question-private-reset"><RotateCcw aria-hidden="true" />恢复公共版本</Button>}

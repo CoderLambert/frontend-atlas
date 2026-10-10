@@ -339,7 +339,8 @@ try {
   const stoppedInput = "停止后保留这条输入。";
   await browser.evaluate(setValueExpression("#account-message", stoppedInput));
   await browser.evaluate("document.querySelector('[data-testid=send-message]').click()");
-  await waitFor(() => browser.evaluate(shellReadyExpression("document.querySelector('[data-testid=cancel-assistant-run]') !== null")), "assistant run is stoppable before completion");
+  await waitFor(() => browser.evaluate(shellReadyExpression(`document.querySelector('[data-testid=cancel-assistant-run]') !== null
+    && (document.querySelector('.coach-account-messages li[data-message-status=streaming] .coach-markdown')?.innerText.trim().length ?? 0) > 0`)), "assistant has rendered a partial delta and is stoppable before completion");
   await browser.evaluate(`(() => {
     const nativeFetch = window.fetch.bind(window);
     window.__cancelRunResult = null;
