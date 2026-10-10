@@ -132,11 +132,7 @@ try {
       const authorization = payload.url ? new URL(payload.url) : null;
       saveSiteLoginProbe({ phase: "response", status: response.status, body: requestBody, authorization: payload.url || null });
       if (!response.ok || !authorization) return response;
-      const state = authorization.searchParams.get("state");
-      const callback = new URL("/api/auth/callback/github", location.origin);
-      callback.searchParams.set("error", "access_denied");
-      if (state) callback.searchParams.set("state", state);
-      return new Response(JSON.stringify({ url: callback.toString() }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ url: new URL("/account/", location.origin).toString() }), { status: 200, headers: { "content-type": "application/json" } });
     };
   })();` });
 
@@ -156,7 +152,7 @@ try {
   const authorization = new URL(flow.authorization);
   assert.equal(authorization.hostname, "github.com");
   assert.equal(authorization.searchParams.get("redirect_uri"), `${origin}/api/auth/callback/github`);
-  await waitFor(async () => evaluate("location.pathname === '/account/'"), "local simulated OAuth cancellation callback");
+  await waitFor(async () => evaluate("location.pathname === '/account/'"), "hosted account return after OAuth URL creation");
 
   await command("Page.navigate", { url: `${origin}/questions/A01/` });
   await waitFor(async () => evaluate("document.querySelector('[data-testid=private-question-login-link]') !== null"), "private question login link");
