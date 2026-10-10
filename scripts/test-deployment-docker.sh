@@ -122,7 +122,12 @@ const good = await fetch(root + '/api/auth/get-session', { headers: { origin: ro
 if (good.status >= 500) throw new Error('runtime auth URL did not initialize');
 const bad = await fetch(root + '/api/auth/sign-in/social', {
   method: 'POST',
-  headers: { origin: 'https://attacker.example', 'content-type': 'application/json' },
+  headers: {
+    origin: 'https://attacker.example',
+    'sec-fetch-site': 'cross-site',
+    'sec-fetch-mode': 'cors',
+    'content-type': 'application/json',
+  },
   body: JSON.stringify({ provider: 'github', callbackURL: '/' }),
 });
 if (bad.status < 400) throw new Error('unexpected Origin was accepted');
