@@ -79,6 +79,14 @@ try {
   await command("Page.enable");
   await command("Runtime.enable");
   await command("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+    const saveSiteLoginProbe = (probe) => {
+      window.__siteLoginProbe = probe;
+      try { sessionStorage.setItem("__siteLoginProbe", JSON.stringify(probe)); } catch {}
+    };
+    try {
+      const savedProbe = sessionStorage.getItem("__siteLoginProbe");
+      if (savedProbe) window.__siteLoginProbe = JSON.parse(savedProbe);
+    } catch {}
     const nativeFetch = window.fetch.bind(window);
     window.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === "string" ? input : input.url, location.origin);
@@ -105,12 +113,12 @@ try {
       }
       if (url.pathname !== "/api/auth/sign-in/social") return nativeFetch(input, init);
       const requestBody = JSON.parse(init.body || "{}");
-      window.__siteLoginProbe = { phase: "request-started", method: init.method, body: requestBody };
+      saveSiteLoginProbe({ phase: "request-started", method: init.method, body: requestBody });
       let response;
       try {
         response = await nativeFetch(input, init);
       } catch (error) {
-        window.__siteLoginProbe = { phase: "fetch-error", name: error?.name || "Error" };
+        saveSiteLoginProbe({ phase: "fetch-error", name: error?.name || "Error" });
         throw error;
       }
       const contentType = response.headers.get("content-type") || "";
@@ -118,11 +126,11 @@ try {
       try {
         payload = await response.clone().json();
       } catch {
-        window.__siteLoginProbe = { phase: "non-json-response", status: response.status, contentType };
+        saveSiteLoginProbe({ phase: "non-json-response", status: response.status, contentType });
         return response;
       }
       const authorization = payload.url ? new URL(payload.url) : null;
-      window.__siteLoginProbe = { phase: "response", status: response.status, body: requestBody, authorization: payload.url || null };
+      saveSiteLoginProbe({ phase: "response", status: response.status, body: requestBody, authorization: payload.url || null });
       if (!response.ok || !authorization) return response;
       const state = authorization.searchParams.get("state");
       const callback = new URL("/api/auth/callback/github", location.origin);
@@ -138,7 +146,7 @@ try {
   try {
     await waitFor(async () => evaluate("window.__siteLoginProbe?.phase !== undefined && window.__siteLoginProbe?.phase !== 'request-started'"), "site OAuth request configuration");
   } catch (error) {
-    const diagnostic = await evaluate(`({ probe: window.__siteLoginProbe || null, buttonDisabled: document.querySelector('[data-testid=hosted-sign-in-github]')?.disabled ?? null, alert: document.querySelector('[role=alert]')?.textContent || null })`);
+    const diagnostic = await evaluate(`({ url: location.href, probe: window.__siteLoginProbe || null, buttonDisabled: document.querySelector('[data-testid=hosted-sign-in-github]')?.disabled ?? null, alert: document.querySelector('[role=alert]')?.textContent || null })`);
     throw new Error(`${error.message} Browser diagnostic: ${JSON.stringify(diagnostic)}`);
   }
   const flow = await evaluate("window.__siteLoginProbe");
