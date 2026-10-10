@@ -132,7 +132,11 @@ try {
       const authorization = payload.url ? new URL(payload.url) : null;
       saveSiteLoginProbe({ phase: "response", status: response.status, body: requestBody, authorization: payload.url || null });
       if (!response.ok || !authorization) return response;
-      return new Response(JSON.stringify({ url: new URL("/account/", location.origin).toString() }), { status: 200, headers: { "content-type": "application/json" } });
+      const state = authorization.searchParams.get("state");
+      const callback = new URL("/api/auth/callback/github", location.origin);
+      callback.searchParams.set("error", "access_denied");
+      if (state) callback.searchParams.set("state", state);
+      return new Response(JSON.stringify({ url: callback.toString() }), { status: 200, headers: { "content-type": "application/json" } });
     };
   })();` });
 
@@ -148,7 +152,7 @@ try {
   const flow = await evaluate("window.__siteLoginProbe");
   assert.equal(flow.phase, "response", `site OAuth request did not return a JSON authorization response: ${JSON.stringify(flow)}`);
   assert.equal(flow.status, 200, "hosted site OAuth request should create the provider authorization URL");
-  assert.deepEqual(flow.body, { provider: "github", callbackURL: "/account/", disableRedirect: true }, "browser requests an authorization URL for its same-domain callback without following an external OAuth redirect inside fetch");
+  assert.deepEqual(flow.body, { provider: "github", callbackURL: "/account/", errorCallbackURL: "/account/", disableRedirect: true }, "browser requests same-domain success and error callbacks without following an external OAuth redirect inside fetch");
   const authorization = new URL(flow.authorization);
   assert.equal(authorization.hostname, "github.com");
   assert.equal(authorization.searchParams.get("redirect_uri"), `${origin}/api/auth/callback/github`);
