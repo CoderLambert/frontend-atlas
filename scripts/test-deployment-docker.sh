@@ -98,7 +98,7 @@ image_ports="$(docker image inspect -f '{{json .Config.ExposedPorts}}' "$image")
 [[ "$image_ports" != *4317* ]] || { printf '%s\n' "Internal SIWC port was exposed by the image." >&2; exit 1; }
 docker exec "$container" test ! -e /app/server/index.mjs
 docker exec "$container" sh -c '! command -v git >/dev/null'
-docker exec "$container" test -w /app/.next/cache
+docker exec "$container" node -e "const fs=require('node:fs'),p='/app/.next/cache/.deployment-cache-probe';fs.writeFileSync(p,'ok');fs.unlinkSync(p)"
 docker exec "$container" node -e "const fs=require('node:fs');try{fs.writeFileSync('/app/.readonly-probe','x');process.exit(1)}catch(error){if(error.code!=='EROFS')process.exit(2)}"
 
 node --input-type=module - <<EOF

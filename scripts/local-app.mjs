@@ -19,7 +19,9 @@ if (!allowedModes.has(mode)) {
 const env = {
   ...process.env,
   FRONTEND_ATLAS_LOCAL_MODE: "1",
-  FRONTEND_ATLAS_SIWC_SERVICE_TOKEN: process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN ?? randomBytes(32).toString("base64url"),
+  ...(!hostedDeployment ? {
+    FRONTEND_ATLAS_SIWC_SERVICE_TOKEN: process.env.FRONTEND_ATLAS_SIWC_SERVICE_TOKEN ?? randomBytes(32).toString("base64url"),
+  } : {}),
   NEXT_PUBLIC_FRONTEND_ATLAS_LOCAL_MODE: "1",
   NEXT_TELEMETRY_DISABLED: "1",
 };
