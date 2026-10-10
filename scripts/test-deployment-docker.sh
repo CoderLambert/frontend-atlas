@@ -131,7 +131,7 @@ const badOrigin = await fetch(root + '/api/questions/D13/private-override', {
   headers: { origin: 'https://attacker.example', 'content-type': 'application/json', 'x-frontend-atlas-request': '1' },
   body: JSON.stringify({}),
 });
-if (badOrigin.status !== 403) throw new Error(`unexpected Origin was not rejected: ${badOrigin.status}`);
+if (badOrigin.status !== 403) throw new Error('unexpected Origin was not rejected: ' + badOrigin.status);
 EOF
 
 FRONTEND_ATLAS_TEST_URL="http://127.0.0.1:$app_port" CHROMIUM_PATH="${CHROMIUM_PATH:-}" node scripts/test-deployment-browser.mjs
